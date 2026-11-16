@@ -1,0 +1,610 @@
+// SPDX-License-Identifier: GPL-2.0-only
+#define _DEFAULT_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#include <errno.h>
+#include <json-c/json.h>
+#include <linux/if_packet.h>
+#include <net/if.h>
+#include <poll.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "omci-socket.h"
+#include "sync-wire.h"
+#include "sync-peer.h"
+#include "sync-wifi.h"
+#include "sync-json.h"
+#include "sync-register.h"
+#include "sync-client.h"
+#include "sync-controller.h"
+
+static int64_t now_ms(void)
+{
+	struct timespec time;
+
+	clock_gettime(CLOCK_MONOTONIC, &time);
+	return (int64_t)time.tv_sec * 1000 + time.tv_nsec / 1000000;
+}
+
+static int exchange_receive(int fd, const uint8_t source[6], const uint8_t peer[6], uint16_t ethertype,
+		    uint8_t slot, unsigned int settings, struct json_object *configuration, bool *ack_seen,
+		    struct json_object **summary, struct json_object **observed)
+{
+	struct fttr_sync_receiver receivers[2] = { 0 };
+	struct fttr_sync_message message;
+	struct pollfd descriptor = { .fd = fd, .events = POLLIN };
+	uint8_t frame[FTTR_SYNC_FRAME_MAX];
+	int ret;
+	int64_t deadline;
+
+	*ack_seen = false;
+	ret = fttr_sync_request(fd, source, peer, ethertype, slot, settings, configuration);
+	if (ret)
+		return ret;
+	/* Fixed per-exchange budget, not an asserted original retry policy. */
+	deadline = now_ms() + (settings == 2 ? 9000 : 3000);
+	for (;;) {
+		int64_t remaining = deadline - now_ms();
+		ssize_t received;
+
+		if (remaining <= 0)
+			return settings == 17 && *summary && !receivers[0].count && !receivers[1].count ? 0 : -ETIMEDOUT;
+		ret = poll(&descriptor, 1, remaining);
+		if (ret < 0) { if (errno == EINTR) continue; return -errno; }
+		if (!ret)
+			continue;
+		if (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL))
+			return -EIO;
+		received = recv(fd, frame, sizeof(frame), MSG_TRUNC);
+		if (received < 0) { if (errno == EAGAIN) continue; return -errno; }
+		if (received < 16 || received > (ssize_t)sizeof(frame) ||
+		    !fttr_sync_destination(frame, source) || memcmp(frame + 6, peer, 6) ||
+		    ((frame[14] & 15) != FTTR_SYNC_RESPONSE &&
+		     (!settings || (frame[14] & 15) != FTTR_SYNC_REQUEST)))
+			continue;
+		/* Independent partial6/7 reports; standalone ACKs cannot clear them. */
+		if (settings && !(frame[15] & 0xfc))
+			ret = fttr_sync_unpack(frame, received, ethertype, &message);
+		else
+			ret = fttr_sync_receive(&receivers[(frame[14] & 15) == FTTR_SYNC_RESPONSE],
+				frame, received, ethertype, now_ms(), &message);
+		if (ret == -EAGAIN)
+			continue;
+		if (ret)
+			return ret;
+		message.slot = slot;
+		ret = fttr_sync_reply_decode(&message, peer, settings, configuration != NULL, ack_seen, summary, observed);
+		if (!ret && settings >= 16 && settings <= 19) {
+			/* Original station/conflict reports receive an empty object; each accepted
+			 * neighbor segment receives Result0, including empty NEW data. */
+			const char *response = settings == 17 ? "{\"Result\":0}" : "{}";
+			ret = fttr_sync_pack(source, peer, ethertype, slot, FTTR_SYNC_RESPONSE,
+				response, strlen(response), frame, sizeof(frame));
+			if (ret >= 0) {
+				ssize_t sent = send(fd, frame, ret, 0);
+				ret = sent == ret ? 0 : sent < 0 ? -errno : -EIO;
+			}
+			if (ret) {
+				json_object_put(*summary); *summary = NULL;
+				if (observed) { json_object_put(*observed); *observed = NULL; }
+			}
+		}
+		/* No final marker exists in the verified neighbor receiver. Observe
+		 * the fixed window, preserving scan_complete=false even on success. */
+		if (!ret && settings == 17) continue;
+		if (ret != -EAGAIN)
+			return ret;
+	}
+}
+
+static int exchange(int fd, const uint8_t source[6], const uint8_t peer[6], uint16_t ethertype,
+	uint8_t slot, unsigned int settings, struct json_object *configuration, bool *ack_seen,
+	struct json_object **summary, struct json_object **observed)
+{
+	/* Automatic discovery may already have produced a diagnostic summary.
+	 * Neighbor accumulation must start with no prior scan segments. */
+	if (settings == 17) { json_object_put(*summary); *summary = NULL; }
+	int ret = exchange_receive(fd, source, peer, ethertype, slot, settings, configuration, ack_seen, summary, observed);
+	if (!ret && settings == 17) ret = fttr_sync_neighbor_fields(*summary, peer);
+	if (ret && settings == 17) { json_object_put(*summary); *summary = NULL; }
+	return ret;
+}
+
+static int discovery(int fd, const uint8_t source[6], uint16_t ethertype,
+		     const uint8_t *target, struct json_object **summary)
+{
+	struct fttr_sync_peer peers[FTTR_SYNC_PEERS] = { 0 };
+	struct pollfd descriptor = { .fd = fd, .events = POLLIN };
+	uint8_t frame[FTTR_SYNC_FRAME_MAX], sequence = 0;
+	int64_t deadline = now_ms() + 6500, next = 0;
+	int ret, slot;
+
+	while (now_ms() < deadline) {
+		int64_t now = now_ms(), wake;
+		ssize_t received;
+
+		if (now >= next) {
+			fttr_sync_heartbeat(source, ethertype, sequence++, frame);
+			received = send(fd, frame, 16, 0);
+			if (received != 16)
+				return received < 0 ? -errno : -EIO;
+			fttr_sync_peer_age(peers);
+			next = now + FTTR_SYNC_HEARTBEAT_MS;
+		}
+		wake = next < deadline ? next : deadline;
+		ret = poll(&descriptor, 1, wake > now ? wake - now : 0);
+		if (ret < 0) { if (errno == EINTR) continue; return -errno; }
+		if (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL))
+			return -EIO;
+		if (!ret)
+			continue;
+		received = recv(fd, frame, sizeof(frame), MSG_TRUNC);
+		if (received < 0) { if (errno == EAGAIN) continue; return -errno; }
+		slot = fttr_sync_peer_receive(peers, source, ethertype, frame, received);
+		if (slot == -ENOSPC)
+			return slot;
+		if (slot >= 0 && target && !memcmp(peers[slot].mac, target, 6))
+			return slot;
+	}
+	if (target)
+		return -ETIMEDOUT;
+	{
+		struct json_object *list = json_object_new_array(), *result = json_object_new_object(), *field;
+		if (!list || !result) { json_object_put(list); json_object_put(result); return -ENOMEM; }
+		field = json_object_new_string("sync_discovery");
+		if (!field || json_object_object_add(result, "event", field)) { json_object_put(field); goto summary_error; }
+		field = json_object_new_boolean(0);
+		if (!field || json_object_object_add(result, "identity_authenticated", field)) { json_object_put(field); goto summary_error; }
+		for (slot = 0; slot < FTTR_SYNC_PEERS; slot++) {
+			struct json_object *entry;
+			char mac[18];
+
+			if (!peers[slot].online)
+				continue;
+			entry = json_object_new_object();
+			if (!entry) goto summary_error;
+			snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x",
+				peers[slot].mac[0], peers[slot].mac[1], peers[slot].mac[2],
+				peers[slot].mac[3], peers[slot].mac[4], peers[slot].mac[5]);
+			field = json_object_new_string(mac);
+			if (!field || json_object_object_add(entry, "mac", field)) { json_object_put(field); json_object_put(entry); goto summary_error; }
+			field = json_object_new_int(slot);
+			if (!field || json_object_object_add(entry, "slot", field)) { json_object_put(field); json_object_put(entry); goto summary_error; }
+			field = json_object_new_int(peers[slot].missed);
+			if (!field || json_object_object_add(entry, "missed", field)) { json_object_put(field); json_object_put(entry); goto summary_error; }
+			if (json_object_array_add(list, entry)) { json_object_put(entry); goto summary_error; }
+		}
+		if (json_object_object_add(result, "peers", list)) goto summary_error;
+		*summary = result;
+		return 0;
+summary_error:
+		json_object_put(list); json_object_put(result); return -ENOMEM;
+	}
+}
+
+static int drain(int fd)
+{
+	uint8_t frame[FTTR_SYNC_FRAME_MAX];
+	unsigned int i;
+	ssize_t n;
+
+	/* Retire queued replies between phases, with a hard bound under flood.
+	 * A later stale identical reply remains indistinguishable on this wire. */
+	for (i = 0; i < 256; i++) {
+		n = recv(fd, frame, sizeof(frame), MSG_DONTWAIT | MSG_TRUNC);
+		if (n < 0)
+			return errno == EAGAIN || errno == EWOULDBLOCK ? 0 : -errno;
+	}
+	return -EBUSY;
+}
+
+static int sync_trigger(int fd, const uint8_t source[6], const uint8_t peer[6],
+ uint16_t ethertype, uint8_t slot, unsigned int operation, struct json_object **summary)
+{
+ bool ack_seen = false;
+ int ret = drain(fd);
+ char address[18];
+ if (ret) return ret;
+ /* One trigger, no replay after an unknown remote outcome. */
+ ret = exchange(fd, source, peer, ethertype, slot, operation, NULL, &ack_seen, summary, NULL);
+ snprintf(address, sizeof(address), "%02x:%02x:%02x:%02x:%02x:%02x",
+  peer[0],peer[1],peer[2],peer[3],peer[4],peer[5]);
+ *summary = json_object_new_object();
+ if (!*summary) return -ENOMEM;
+ const char *keys[] = { "event", "peer", "slot", "ack_seen",
+  operation == 20 ? "channel_verified" : operation == 21 ? "reboot_verified" : "recovery_verified", "error" };
+ for (unsigned int i = 0; i < sizeof(keys)/sizeof(*keys); i++) {
+  struct json_object *value = i == 0 ? json_object_new_string(operation == 20 ? "sync_channel_auto" : operation == 21 ? "sync_reboot" : "sync_recovery") :
+   i == 1 ? json_object_new_string(address) : i == 2 ? json_object_new_int(slot) :
+   i == 3 ? json_object_new_boolean(ack_seen) : i == 4 ? json_object_new_boolean(0) : json_object_new_int(ret);
+  if (!value || json_object_object_add(*summary, keys[i], value)) {
+   json_object_put(value); json_object_put(*summary); *summary = NULL; return -ENOMEM;
+  }
+ }
+ return ret;
+}
+
+static int sync_trigger_all(int fd, const uint8_t source[6], uint16_t ethertype,
+ unsigned int operation, struct json_object **summary)
+{
+ struct json_object *found = NULL, *peers, *results = NULL, *report = NULL;
+ int ret = discovery(fd, source, ethertype, NULL, &found), error = 0;
+ if (ret) goto out;
+ if (!json_object_object_get_ex(found, "peers", &peers)) { ret = -EBADMSG; goto out; }
+ if (!json_object_array_length(peers)) { ret = -ENODEV; goto out; }
+ results = json_object_new_array();
+ if (!results) { ret = -ENOMEM; goto out; }
+ for (size_t i = 0; i < json_object_array_length(peers); i++) {
+  struct json_object *entry = json_object_array_get_idx(peers, i), *mac, *slot;
+  uint8_t peer[6];
+  if (!json_object_object_get_ex(entry, "mac", &mac) || !json_object_object_get_ex(entry, "slot", &slot) ||
+      fttr_sync_mac_parse(json_object_get_string(mac), peer)) { ret = -EBADMSG; goto out; }
+  ret = sync_trigger(fd, source, peer, ethertype, json_object_get_int(slot), operation, &report);
+  if (!report) goto out;
+  if (ret && !error) error = ret;
+  if (json_object_array_add(results, report)) { ret = -ENOMEM; goto out; }
+  report = NULL;
+ }
+ *summary = results; results = NULL; ret = error;
+out:
+ json_object_put(report); json_object_put(results); json_object_put(found);
+ return ret;
+}
+
+static int registration(int fd, const uint8_t source[6], const uint8_t peer[6],
+		uint16_t ethertype, uint8_t slot, struct json_object *policy, struct json_object **summary)
+{
+	struct fttr_sync_receiver receivers[2] = { 0 };
+	struct fttr_sync_message message;
+	struct pollfd descriptor = { .fd = fd, .events = POLLIN };
+	struct json_object *reply = NULL, *ready;
+	uint8_t frame[FTTR_SYNC_FRAME_MAX], sequence = 0;
+	int64_t deadline = now_ms() + 6500, next = 0;
+	int ret;
+
+	while (now_ms() < deadline) {
+		int64_t now = now_ms(), wake;
+		ssize_t n;
+		const char *payload;
+
+		if (now >= next) {
+			fttr_sync_heartbeat(source, ethertype, sequence++, frame);
+			n = send(fd, frame, 16, 0);
+			if (n != 16)
+				return n < 0 ? -errno : -EIO;
+			next = now + FTTR_SYNC_HEARTBEAT_MS;
+		}
+		wake = next < deadline ? next : deadline;
+		ret = poll(&descriptor, 1, wake > now ? wake - now : 0);
+		if (ret < 0) { if (errno == EINTR) continue; return -errno; }
+		if (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL))
+			return -EIO;
+		if (!ret)
+			continue;
+		n = recv(fd, frame, sizeof(frame), MSG_TRUNC);
+		if (n < 0) { if (errno == EAGAIN) continue; return -errno; }
+		if (n < 16 || !fttr_sync_destination(frame, source) || memcmp(frame + 6, peer, 6) ||
+		    ((frame[14] & 15) != FTTR_SYNC_REQUEST && (frame[14] & 15) != FTTR_SYNC_RESPONSE))
+			continue;
+		ret = fttr_sync_receive(&receivers[(frame[14] & 15) == FTTR_SYNC_RESPONSE], frame, n,
+			ethertype, now_ms(), &message);
+		if (ret == -EAGAIN)
+			continue;
+		if (ret)
+			return ret;
+		ret = fttr_sync_register_reply(&message, policy, source, &reply);
+		if (ret == -EAGAIN)
+			continue;
+		if (ret)
+			return ret;
+		payload = json_object_to_json_string_ext(reply, JSON_C_TO_STRING_PLAIN);
+		ret = fttr_sync_pack(source, fttr_sync_slave_group, ethertype, slot, FTTR_SYNC_RESPONSE,
+			payload, strlen(payload), frame, sizeof(frame));
+		json_object_put(reply);
+		if (ret < 0)
+			return ret;
+		n = send(fd, frame, ret, 0);
+		if (n != ret)
+			return n < 0 ? -errno : -EIO;
+		*summary = json_object_new_object();
+		json_object_object_add(*summary, "event", json_object_new_string("sync_registration_reply"));
+		json_object_object_add(*summary, "slot", json_object_new_int(slot));
+		json_object_object_add(*summary, "identity_pin_match", json_object_new_boolean(1));
+		json_object_object_add(*summary, "identity_authenticated", json_object_new_boolean(0));
+		json_object_object_add(*summary, "peer_acceptance_verified", json_object_new_boolean(0));
+		json_object_object_get_ex(policy, "Ready", &ready);
+		json_object_object_add(*summary, "advertised_ready", json_object_get(ready));
+		return 0;
+	}
+	return -ETIMEDOUT;
+}
+
+int main(int argc, char **argv)
+{
+	struct ifreq request = { 0 };
+	struct json_object *summary = NULL, *desired = NULL;
+	struct sockaddr_un lock = { .sun_family = AF_UNIX };
+	uint8_t peer[6], source[6];
+	char *end;
+	unsigned int index;
+	unsigned long slot, ethertype;
+	int lease = -1, control = -1, fd = -1, ret = -EINVAL;
+	bool discover = argc == 4 && !strcmp(argv[2], "discover");
+	bool resident = (argc == 5 || (argc == 7 && !strcmp(argv[5], "--state"))) && !strcmp(argv[2], "serve");
+	bool apply = argc == 7 && !strcmp(argv[5], "wifi-apply");
+	bool easymesh = argc == 7 && !strcmp(argv[5], "easymesh");
+	bool info = argc == 6 && !strcmp(argv[5], "onu-info");
+	bool neighbors = argc == 6 && !strcmp(argv[5], "wifi-neighbors");
+	bool stations = argc == 6 && !strcmp(argv[5], "wifi-stations");
+	bool bssid_conflicts = argc == 6 && !strcmp(argv[5], "bssid-conflicts");
+	bool ssid_conflicts = argc == 6 && !strcmp(argv[5], "ssid-conflicts");
+	bool channel_auto = argc == 6 && !strcmp(argv[5], "channel-auto");
+	bool sync_reboot = argc == 6 && !strcmp(argv[5], "reboot");
+	bool sync_recovery = argc == 6 && !strcmp(argv[5], "recovery");
+	bool trigger_all = (channel_auto || sync_reboot || sync_recovery) && !strcmp(argv[2], "all");
+	bool qos = argc == 7 && !strcmp(argv[5], "qos-sync");
+	bool password_apply=argc==7 && !strcmp(argv[5],"web-password-apply");
+	bool password_info=argc==6 && !strcmp(argv[5],"web-password");
+	bool ports_apply=argc==7 && !strcmp(argv[5],"iptv-ports-apply");
+	bool ports_info=argc==6 && !strcmp(argv[5],"iptv-ports");
+	bool iptv_apply=argc==7 && !strcmp(argv[5],"iptv-apply");
+	bool iptv_info=argc==6 && !strcmp(argv[5],"iptv-settings");
+	bool time_apply=argc==7 && !strcmp(argv[5],"time-apply");
+	bool time_info=argc==6 && !strcmp(argv[5],"time-settings");
+	bool radio_apply = argc == 7 && !strcmp(argv[5], "radio-apply");
+	bool wan = argc == 7 && !strcmp(argv[5], "wan-ip");
+	bool radio_info = argc == 6 && !strcmp(argv[5], "radio-info");
+	bool registering = argc == 7 && !strcmp(argv[5], "register");
+	unsigned int settings = sync_recovery?22:sync_reboot?21:channel_auto?20:ssid_conflicts?19:bssid_conflicts?18:neighbors?17:stations?16:qos?15:password_apply?14:password_info?13:ports_apply?12:ports_info?11:iptv_apply?10:iptv_info?9:time_apply?8:time_info?7:wan?6:radio_apply?5:radio_info?4:info ? 3 : easymesh ? 2 : apply || (argc == 6 && !strcmp(argv[5], "wifi-settings"));
+	bool automatic = !resident && (argc == 5 || settings || registering) && !strcmp(argv[3], "auto");
+	bool ack_seen = false;
+
+	if ((!discover && !resident && !settings && !registering && argc != 5) || strlen(argv[1]) >= IFNAMSIZ || strchr(argv[1], '/') ||
+	    (!discover && !resident && !trigger_all && fttr_sync_mac_parse(argv[2], peer)) ||
+	    (trigger_all && strcmp(argv[3], "auto"))) {
+		fprintf(stderr, "Usage: %s <interface> <peer-MAC> <sync-slot:0..15|auto> <ethertype> [reboot | recovery | channel-auto | bssid-conflicts | ssid-conflicts | wifi-neighbors | wifi-stations | qos-sync <private-json-file> | web-password | web-password-apply <private-json-file> | iptv-ports | iptv-ports-apply <private-json-file> | iptv-settings | iptv-apply <private-json-file> | time-settings | time-apply <private-json-file> | wan-ip <IPv4-or-IPv6> | onu-info | radio-info | radio-apply <private-json-file> | wifi-settings | wifi-apply <private-json-file> | easymesh <0|1> | register <private-policy-file>]\n"
+			"       %s <interface> all auto <ethertype> <channel-auto|reboot|recovery>\n"
+			"       %s <interface> discover <ethertype>\n"
+			"       %s <interface> serve <ethertype> <private-policy-file> [--state <private-persistent-directory>]\n", argv[0], argv[0], argv[0], argv[0]);
+		return 2;
+	}
+	if (resident) {
+		ret = fttr_sync_json_load_bounded(argv[4], 131072, &desired);
+		if (!ret)
+			ret = fttr_sync_controller_policy(desired);
+		if (ret)
+			goto out;
+		ret = -EINVAL;
+	}
+	if (easymesh) {
+		if (strcmp(argv[6], "0") && strcmp(argv[6], "1")) goto out;
+		desired = json_object_new_object();
+		if (!desired) { ret = -ENOMEM; goto out; }
+		json_object_object_add(desired, "act", json_object_new_string("config"));
+		json_object_object_add(desired, "EnableEasymesh", json_object_new_string(argv[6]));
+	}
+	if (qos) {
+		ret = fttr_sync_json_load_bounded(argv[6], FTTR_SYNC_FRAME_MAX, &desired);
+		if (!ret) ret = fttr_sync_qos_validate(desired);
+		if (ret) goto out;
+		ret = -EINVAL;
+	}
+	if (apply) {
+		ret = fttr_sync_wifi_load(argv[6], &desired);
+		if (ret)
+			goto out;
+		ret = -EINVAL;
+	}
+	if (time_apply || iptv_apply || ports_apply || password_apply) {
+		ret=fttr_sync_json_load_private(argv[6],&desired);
+		if(!ret)ret=password_apply?fttr_sync_web_password_validate(desired):ports_apply?fttr_sync_iptv_ports_validate(desired):iptv_apply?fttr_sync_iptv_validate(desired):fttr_sync_time_validate(desired);
+		if(ret)goto out;
+		ret=-EINVAL;
+	}
+	if (radio_apply) {
+		ret=fttr_sync_json_load_private(argv[6],&desired);
+		if (!ret) ret=fttr_sync_radio_validate(desired);
+		if (ret) goto out;
+		ret=-EINVAL;
+	}
+	if (wan) {
+		if (fttr_sync_wan_address(argv[6]) < 0)
+			goto out;
+		desired = json_object_new_string(argv[6]);
+		if (!desired) { ret = -ENOMEM; goto out; }
+	}
+	if (registering) {
+		ret = fttr_sync_json_load_private(argv[6], &desired);
+		if (!ret)
+			ret = fttr_sync_register_policy(desired);
+		if (ret)
+			goto out;
+		ret = -EINVAL;
+	}
+	errno = 0;
+	slot = 0;
+	if (!discover && !resident && !automatic) {
+		slot = strtoul(argv[3], &end, 0);
+		if (errno || !*argv[3] || *end || slot > 15)
+			goto out;
+	}
+	errno = 0;
+	ethertype = strtoul(argv[discover || resident ? 3 : 4], &end, 0);
+	if (errno || !*argv[discover || resident ? 3 : 4] || *end || ethertype < 0x600 || ethertype > 0xffff)
+		goto out;
+	index = if_nametoindex(argv[1]);
+	if (!index) { ret = -errno; goto out; }
+	/* Abstract socket ownership is scoped to the network namespace and
+	 * automatically released on exit, unlike a persistent lock filename. */
+	snprintf(lock.sun_path + 1, sizeof(lock.sun_path) - 1, "tyfza1-fttr-sync-%u", index);
+	lease = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	if (lease < 0 || bind(lease, (struct sockaddr *)&lock,
+	    offsetof(struct sockaddr_un, sun_path) + 1 + strlen(lock.sun_path + 1))) { ret = -errno; goto out; }
+	control = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	if (control < 0) { ret = -errno; goto out; }
+	strcpy(request.ifr_name, argv[1]);
+	if (ioctl(control, SIOCGIFHWADDR, &request)) { ret = -errno; goto out; }
+	memcpy(source, request.ifr_hwaddr.sa_data, 6);
+	fd = fttr_omci_open(argv[1], ethertype);
+	if (fd < 0) { ret = fd; goto out; }
+	{
+		struct packet_mreq membership = { .mr_ifindex = index, .mr_type = PACKET_MR_MULTICAST, .mr_alen = 6 };
+		const uint8_t *groups[] = { fttr_sync_master_group, fttr_sync_slave_group };
+		unsigned int i;
+
+		for (i = 0; i < 2; i++) {
+			memcpy(membership.mr_address, groups[i], 6);
+			if (setsockopt(fd, SOL_PACKET, PACKET_ADD_MEMBERSHIP, &membership, sizeof(membership))) {
+				ret = -errno;
+				goto out;
+			}
+		}
+	}
+	if (resident) {
+		ret = fttr_sync_controller(fd, source, ethertype, desired, argc == 7 ? argv[6] : NULL);
+		goto out;
+	}
+	if (trigger_all) {
+		ret = sync_trigger_all(fd, source, ethertype, settings, &summary);
+		goto out;
+	}
+	if (discover || automatic) {
+		ret = discovery(fd, source, ethertype, discover ? NULL : peer, &summary);
+		if (ret < 0 || discover)
+			goto out;
+		slot = ret;
+	}
+	if (registering) {
+		ret = registration(fd, source, peer, ethertype, slot, desired, &summary);
+		goto out;
+	}
+	if (channel_auto || sync_reboot || sync_recovery) {
+  json_object_put(summary); summary = NULL;
+  ret = sync_trigger(fd, source, peer, ethertype, slot, settings, &summary);
+  goto out;
+ }
+	if (easymesh) {
+		struct json_object *observed = NULL;
+		bool enabled = false, write_ack = false;
+		int write_result, read_result;
+		ret = drain(fd);
+		if (ret) goto out;
+		ret = exchange(fd, source, peer, ethertype, slot, 3, NULL, &ack_seen, &summary, &observed);
+		if (!ret) ret = fttr_sync_info_mesh(observed, &enabled);
+		json_object_put(observed); observed = NULL; json_object_put(summary); summary = NULL;
+		if (ret) goto out;
+		ret = drain(fd);
+		if (ret) goto out;
+		write_result = exchange(fd, source, peer, ethertype, slot, 2, desired, &write_ack, &summary, NULL);
+		read_result = write_result == -ESTALE ? -ESTALE : drain(fd);
+		if (!read_result)
+			read_result = exchange(fd, source, peer, ethertype, slot, 3, NULL, &ack_seen, &summary, &observed);
+		if (!read_result) read_result = fttr_sync_info_mesh(observed, &enabled);
+		if (!read_result && enabled != (argv[6][0] == '1')) read_result = -EUCLEAN;
+		json_object_put(observed); json_object_put(summary);
+		summary = json_object_new_object();
+		json_object_object_add(summary, "event", json_object_new_string("sync_easymesh"));
+		json_object_object_add(summary, "peer", json_object_new_string(argv[2]));
+		json_object_object_add(summary, "slot", json_object_new_int(slot));
+		json_object_object_add(summary, "requested_enabled", json_object_new_boolean(argv[6][0] == '1'));
+		json_object_object_add(summary, "ack_seen", json_object_new_boolean(write_ack));
+		json_object_object_add(summary, "completion_reported", json_object_new_boolean(!write_result));
+		json_object_object_add(summary, "write_result", json_object_new_int(write_result));
+		json_object_object_add(summary, "readback_result", json_object_new_int(read_result));
+		json_object_object_add(summary, "reported_state_matches", json_object_new_boolean(!read_result));
+		json_object_object_add(summary, "configuration_verified", json_object_new_boolean(0));
+		ret = write_result ? write_result : read_result;
+		json_object_object_add(summary, "error", json_object_new_int(ret));
+		goto out;
+	}
+	if (wan || qos) {
+		ret = exchange(fd, source, peer, ethertype, slot, qos ? 15 : 6, desired, &ack_seen, &summary, NULL);
+		summary = json_object_new_object();
+		json_object_object_add(summary, "event", json_object_new_string(qos ? "sync_qos" : "sync_wan_ip"));
+		json_object_object_add(summary, "peer", json_object_new_string(argv[2]));
+		json_object_object_add(summary, "slot", json_object_new_int(slot));
+		if (!qos) json_object_object_add(summary, "address", json_object_get(desired));
+		else {
+			json_object_object_add(summary, "values_redacted", json_object_new_boolean(1));
+			json_object_object_add(summary, "scheduler_verified", json_object_new_boolean(0));
+		}
+		json_object_object_add(summary, "ack_seen", json_object_new_boolean(ack_seen));
+		json_object_object_add(summary, "configuration_verified", json_object_new_boolean(0));
+		json_object_object_add(summary, "error", json_object_new_int(ret));
+		goto out;
+	}
+	if (apply || radio_apply || time_apply || iptv_apply || ports_apply || password_apply) {
+		struct json_object *observed = NULL;
+		int write_result = 0, read_result = 0;
+
+		ret = exchange(fd, source, peer, ethertype, slot, password_apply?13:ports_apply?11:iptv_apply?9:time_apply?7:radio_apply?4:1, NULL, &ack_seen, &summary, &observed);
+		if (!ret)
+			ret = password_apply?fttr_sync_web_password_check(observed,desired,false):ports_apply?fttr_sync_iptv_ports_check(observed,desired,false):iptv_apply?fttr_sync_iptv_check(observed,desired,false):time_apply?fttr_sync_time_check(observed,desired,false):radio_apply?fttr_sync_radio_check(observed,desired,false):fttr_sync_wifi_check(observed, desired, false);
+		json_object_put(observed);
+		observed = NULL;
+		json_object_put(summary);
+		summary = NULL;
+		if (ret)
+			goto out;
+		ret = drain(fd);
+		if (ret)
+			goto out;
+		write_result = exchange(fd, source, peer, ethertype, slot, password_apply?14:ports_apply?12:iptv_apply?10:time_apply?8:radio_apply?5:1, desired, &ack_seen, &summary, NULL);
+		/* A lost ACK does not imply the remote write was not applied. Always
+		 * attempt independent readback; never replay a password blindly. */
+		read_result = write_result==-ESTALE?-ESTALE:drain(fd);
+		if (!read_result)
+			read_result = exchange(fd, source, peer, ethertype, slot, password_apply?13:ports_apply?11:iptv_apply?9:time_apply?7:radio_apply?4:1, NULL, &ack_seen, &summary, &observed);
+		if (!read_result)
+			read_result = password_apply?fttr_sync_web_password_check(observed,desired,true):ports_apply?fttr_sync_iptv_ports_check(observed,desired,true):iptv_apply?fttr_sync_iptv_check(observed,desired,true):time_apply?fttr_sync_time_check(observed,desired,true):radio_apply?fttr_sync_radio_check(observed,desired,true):fttr_sync_wifi_check(observed, desired, true);
+		json_object_put(observed);
+		json_object_put(summary);
+		summary = json_object_new_object();
+		json_object_object_add(summary, "event", json_object_new_string(password_apply?"sync_web_password_apply":ports_apply?"sync_iptv_ports_apply":iptv_apply?"sync_iptv_apply":time_apply?"sync_time_apply":radio_apply?"sync_radio_apply":"sync_wifi_apply"));
+		json_object_object_add(summary, "peer", json_object_new_string(argv[2]));
+		json_object_object_add(summary, "slot", json_object_new_int(slot));
+		if(!time_apply && !iptv_apply && !ports_apply && !password_apply) {
+			struct json_object *ssid_index;
+
+			json_object_object_get_ex(desired, radio_apply?"RadioType":"SSIDIndex", &ssid_index);
+			json_object_object_add(summary, radio_apply?"radio_type":"ssid_index", json_object_get(ssid_index));
+		}
+		json_object_object_add(summary, "write_attempted", json_object_new_boolean(1));
+		json_object_object_add(summary, "write_result", json_object_new_int(write_result));
+		json_object_object_add(summary, "readback_result", json_object_new_int(read_result));
+		json_object_object_add(summary, "readable_fields_match", json_object_new_boolean(!read_result));
+		if(password_apply)json_object_object_add(summary,"password_matches",json_object_new_boolean(!read_result));
+		if(ports_apply){
+   json_object_object_add(summary,"ports_match",json_object_new_boolean(!read_result));
+   json_object_object_add(summary,"vlan_verified",json_object_new_boolean(0));
+  }
+		if(iptv_apply || ports_apply)json_object_object_add(summary,"traffic_verified",json_object_new_boolean(0));
+		if(time_apply)json_object_object_add(summary,"clock_synchronized",json_object_new_boolean(0));
+		json_object_object_add(summary, "credentials_verified", json_object_new_boolean(0));
+		json_object_object_add(summary, "configuration_verified", json_object_new_boolean(0));
+		json_object_object_add(summary, "values_redacted", json_object_new_boolean(1));
+		ret = write_result ? write_result : read_result;
+	} else {
+		ret = exchange(fd, source, peer, ethertype, slot, settings, NULL, &ack_seen, &summary, NULL);
+	}
+out:
+	if (summary) {
+		puts(json_object_to_json_string_ext(summary, JSON_C_TO_STRING_PLAIN));
+		if (fflush(stdout))
+			ret = -errno;
+	}
+	if (ret)
+		fprintf(stderr, "FTTR sync %s: %s (%d)\n", resident ? "serve" : discover ? "discovery" : registering ? "register" : channel_auto ? "channel-auto" : sync_reboot ? "reboot" : sync_recovery ? "recovery" : bssid_conflicts ? "bssid-conflicts" : ssid_conflicts ? "ssid-conflicts" : neighbors ? "wifi-neighbors" : stations ? "wifi-stations" : qos ? "qos-sync" : password_apply ? "web-password-apply" : password_info ? "web-password" : ports_apply ? "iptv-ports-apply" : ports_info ? "iptv-ports" : iptv_apply ? "iptv-apply" : iptv_info ? "iptv-settings" : time_apply ? "time-apply" : time_info ? "time-settings" : wan ? "wan-ip" : easymesh ? "easymesh" : apply ? "wifi-apply" : radio_apply ? "radio-apply" : radio_info ? "radio-info" : info ? "onu-info" : settings ? "wifi-settings" : "GetWifi", strerror(-ret), ret);
+	json_object_put(summary);
+	json_object_put(desired);
+	if (fd >= 0) close(fd);
+	if (control >= 0) close(control);
+	if (lease >= 0) close(lease);
+	return ret ? 1 : 0;
+}

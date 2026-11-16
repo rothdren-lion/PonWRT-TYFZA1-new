@@ -1,0 +1,209 @@
+{
+  "stock_module_reference": {
+    "path": "evidence/wireless-study-20261009-104746/evidence/stock/modules/rtk_wifi6.ko",
+    "sha256": "745328f06968003a02afa7ba7a3656f54be8f715d993f382f2a2e68acbad374e",
+    "executed_on_openwrt": false
+  },
+  "cold_RAM_boot": {
+    "FIT": "artifacts/full-pon-radio-bbrf01-6.18.55/ram-pcie/image.itb",
+    "sha256": "e3c1d08d46322a1d119037ab329eaa4de1b1b40587f3230a727dd5d065e3b60b",
+    "bytes": 6537676,
+    "verified_live": true,
+    "log": "logs/radio-bbrf01-ram-20261009.txt",
+    "includes": [
+      "base_BB",
+      "first_base_Radio_pass"
+    ],
+    "does_not_include": [
+      "power_objects",
+      "RF_read_observation"
+    ]
+  },
+  "radios": [
+    {
+      "family": "RTL8852C",
+      "PCI": "0000:01:00.0",
+      "base_BB_rows": 1432,
+      "base_gain_rows": 336,
+      "base_radio_writes_A_B": [
+        2044,
+        2011
+      ],
+      "radio_pages_A_B": [
+        1,
+        1
+      ],
+      "radio_page_bytes_A_B": [
+        1568,
+        1568
+      ],
+      "BA_CAM_done_acks": 1,
+      "RX_errors": 0,
+      "ByRate_rows_base_FEM": [
+        35,
+        35
+      ],
+      "Track_rows_base_FEM": [
+        36,
+        36
+      ],
+      "analog_RF30": [
+        68023,
+        68023
+      ],
+      "analog_RF18": [
+        4097,
+        4096
+      ],
+      "digital_RF18": [
+        1,
+        1
+      ]
+    },
+    {
+      "family": "RTL8192XB",
+      "PCI": "0001:01:00.0",
+      "base_BB_rows": 1417,
+      "base_gain_rows": 128,
+      "base_radio_writes_A_B": [
+        487,
+        406
+      ],
+      "radio_pages_A_B": [
+        1,
+        1
+      ],
+      "radio_page_bytes_A_B": [
+        312,
+        312
+      ],
+      "BA_CAM_done_acks": 1,
+      "RX_errors": 0,
+      "ByRate_rows_base_FEM": [
+        24,
+        24
+      ],
+      "Track_rows_base_FEM": [
+        20,
+        20
+      ],
+      "analog_RF30": [
+        229874,
+        229874
+      ],
+      "analog_RF18": [
+        7169,
+        7169
+      ],
+      "digital_RF18": [
+        3073,
+        3073
+      ]
+    }
+  ],
+  "RF_fields_unresolved": [
+    "mode/gain and bandwidth readback differs from the last table write",
+    "RTL8852C pathB analogRF18 channel reads0 before complete channel/calibration setup"
+  ],
+  "pending": [
+    "power_limit",
+    "RU_limit",
+    "second_RF_pass",
+    "FEM_execution",
+    "RF_DM_and_calibration",
+    "normal_TX_WP",
+    "mac80211_AP_and_association"
+  ],
+  "PON": {
+    "mode": "epon-d10g",
+    "DHCP": "192.0.2.53/24",
+    "public_ping": "2/2"
+  },
+  "last_verified_native_live_module": {
+    "path": "artifacts/live-radio-rf-read/rtl_ax_ap_live.ko",
+    "sha256": "b2c9a576ada5b75345739d74c31967e4dc52ab289b0ce9d767b322183f5a7304",
+    "log": "logs/radio-live-rf-read-20261009.txt",
+    "source_hashes": {
+      "download.h": "23afbe9d675553d09b5ea36e8b0bb570222320fecfa9254fd2e0f3b5149d7b74",
+      "fw.h": "e43f809542391a28b75d28234611a2e275919af0e381bbae6b8db99f82b788ab",
+      "mac-runtime.h": "a9eda967b9c608a67006ae552c1912eb8908dd97681cc53903a2b16737517a67",
+      "pci.c": "175776559bf4179b0a86ab663294092293952c3cd7c42c9ca1ebcd5fbc5ae816",
+      "phy.c": "8d83ddef4241ca27446fb2cf1218bb9c3bc26f8504175f882f3071031f360ba1",
+      "phy.h": "8834c75dd2a66edad1026ce6a999caf2f1cf8ca65e5c06e1a6d48d160fbacd99",
+      "power-tables.c": "3993741db9eb814d53c0727a6e54c89716700031d7f5a2922c8940d5c64d48ad",
+      "power-tables.h": "aaccfbe3a06baa95661681e3b02c6927d77f73088b3dbe9ef0d46b3fca947a66",
+      "power.h": "5faf7737edf8bb86baf7909a03a84b0db1df9f90cbe0acc863972ca8d6ab72df",
+      "receive.h": "8c12a5ad063a1888d74d1dc351116f24b8a843a98ed4af98134a7f359844a5a6",
+      "rx.c": "e4deaca1558f1d73a249557ed045abce2bb3e6772eab2d18f32cb33e38cfa160",
+      "rx.h": "c061746628abf781b517c47452fd89ac82960fe19a97b7c53498a6b0588e3e6a",
+      "transport.h": "6d58cf8d0770630e2c214f018feeced9317a020716673ca5b40f8281afc2502a"
+    }
+  },
+  "current_on_board": {
+    "FIT": "artifacts/full-pon-radio-xb-tssi-de01-6.18.55/ram-pcie/image.itb",
+    "sha256": "32e7fe6dc72f89f385801ce2775267b3d66c931fc0d7a2f7dcaa44d515072679",
+    "bytes": 7322244,
+    "kernel_sha256": "029e2db52f2ef14c8b5d06ca3e332a3211c8f7fb713f703d8adfd00e7fd110c0",
+    "DTB_sha256": "ed3a18f2b09dbec988883e9a36b47efdae819c82db47864deb3ad1e4eecd23ac",
+    "source_stage": "2201a0f",
+    "native_driver": "rtl_ax_ap builtin, both endpoints",
+    "cold_boot_verified": true,
+    "active_RAM_driver_override": {
+      "radio": "both endpoints C and XB",
+      "driver": "rtl_ax_ap_live",
+      "module": "artifacts/live-radio-xb-tssi02/rtl_ax_ap_live.ko",
+      "sha256": "3de28c23dd3fb2abc4afa4f4bd5bbcc25ce03299c039aea97d7e20b0cc313425",
+      "interfaces": "phy24/mon0 channel36;phy25/mon1 channel6",
+      "evidence": "manifests/radio-xb-tssi-20261010.json",
+      "boot_FIT_contains_XB_TSSI": false
+    },
+    "C_native_mac80211_monitor": true,
+    "XB_native_mac80211_monitor": true,
+    "channels": [
+      36,
+      6
+    ],
+    "actual_receive_evidence": "manifests/radio-native-tssi-builtin-20261010.json",
+    "AP_available": false,
+    "XEPON_DHCP": "192.0.2.53/24"
+  },
+  "previous_on_board": {
+    "FIT": "artifacts/full-pon-radio-mac80211-rx02-signeddb-6.18.55/ram-pcie/image.itb",
+    "sha256": "aca49174f37e88cb4a05e7b433bde85dd1773f1c623f57d6590175bbd24b3368",
+    "bytes": 7315360,
+    "source_stage": "c4458e1",
+    "kernel_sha256": "18ae2848ff5ee0ef39042c1170ea4f4cbad5d46c5d52cf9afd62b4248742d512",
+    "DTB_sha256": "ed3a18f2b09dbec988883e9a36b47efdae819c82db47864deb3ad1e4eecd23ac",
+    "native_driver": "rtl_ax_ap built-in",
+    "cold_boot_verified": true,
+    "active_RAM_driver_override": {
+      "radio": "8192XB / 0001:01:00.0",
+      "driver": "rtl_ax_ap_live",
+      "module": "artifacts/live-radio-xb-monitor01/rtl_ax_ap_live.ko",
+      "sha256": "5294c84b54dde6857ff940f23f03d0e1415c288a5b56552da2e7e3f3db04b0b5",
+      "Linux_interface": "phy1 / mon1",
+      "channel": 6,
+      "raw_receive_evidence": "manifests/radio-xb-channel6-receive-20261010.json",
+      "C_still_builtin": "phy0 / mon0 / channel36",
+      "boot_FIT_contains_XB_channel_operation": false
+    },
+    "native_RX_active_both_radios": true,
+    "C_native_mac80211_monitor": true,
+    "C_channel": 36,
+    "RX_errors": 0,
+    "DACK_all_four_paths_done": true,
+    "signed_regdb_in_actual_boot_FIT": true,
+    "AP_available": false,
+    "XEPON_DHCP": "192.0.2.53/24",
+    "public_ping": "2/2",
+    "log": "logs/radio-mac80211-signeddb02-20261010.txt",
+    "receive_evidence": "manifests/radio-mac80211-signeddb02-live-20261010.json"
+  },
+  "latest_complete_candidate": {
+    "FIT": "artifacts/full-pon-radio-c-gapk01-6.18.55/ram-pcie/image.itb",
+    "source": "ff9c8d7",
+    "contains_C_GAPK": true,
+    "contains_XB_TSSI": false,
+    "hardware_boot_verified": false
+  }
+}

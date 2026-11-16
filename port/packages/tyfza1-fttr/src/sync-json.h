@@ -1,0 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+#ifndef TYFZA1_SYNC_JSON_H
+#define TYFZA1_SYNC_JSON_H
+
+#include <json-c/json.h>
+
+int fttr_sync_json_load_private(const char *path, struct json_object **value);
+int fttr_sync_json_load_bounded(const char *path, size_t limit, struct json_object **value);
+/* Reads from the current offset; the caller retains descriptor ownership. */
+int fttr_sync_json_read_private(int fd, size_t limit, struct json_object **value);
+
+#endif

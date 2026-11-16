@@ -1,0 +1,32 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+#ifndef RTL_AX_NI_STATE_H
+#define RTL_AX_NI_STATE_H
+struct rtl_ax_tx;
+struct rtl_ax_ni_state {
+ struct rtl_ax_tx *tx;
+ void __iomem *regs, *dma, *vp;
+ void *test_memory, *uplink_memory;
+ dma_addr_t test_dma, uplink_dma;
+ u32 registers[14], saved[14], arb[8], epp_bases[8], epp_eq[8];
+ u32 attrs[2][2], vp_saved[5];
+ unsigned int cpu, eq, profile, vp_index;
+ bool active, vp_active, epp_retiring, uplink_ready;
+ bool retire_quiescing, retire_drop_pending;
+ /* Requested withdrawal closes admission even before FE/PKT_DROP succeeds.
+  * retire_quiescing separately records an established drain fence. */
+ bool retire_requested, peer_retiring[128], peer_retire_keep_rx[128];
+ u8 retire_macid;
+ struct net_device *route_dev,*retired_vif[12];
+ /* Borrowed under ni_test_lock until FE withdrawal and packet drain finish. */
+ struct net_device *peer_dev[128];
+ u8 peer_address[128][6],peer_wifi[128];
+ unsigned int route_macid;
+ u32 route_tim[128];
+ u32 ps_seen[2][128];
+ u32 tx_activity_seen[128][8];
+ u64 ba_refreshes;
+ bool ps_issued[128];
+ bool route_peers[128];
+ struct work_struct ps_work;
+};
+#endif

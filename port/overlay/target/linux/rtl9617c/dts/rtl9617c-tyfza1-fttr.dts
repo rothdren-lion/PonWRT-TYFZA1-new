@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// FTTR development image: 20261007 unit, original chip ID 0x9690.
+#include "rtl9617c-tyfza1-pcie.dts"
+
+&ni0 {
+	reg = <4 0xf4300000 0 0x10000>, <0 0xf4500000 0 0x2000>,
+	      <4 0xf7001000 0 0x1000>, <4 0xf432d000 0 0x1000>,
+	      <4 0xf4320098 0 4>, <4 0xf432f000 0 0x1000>,
+	      <4 0xf432e000 0 0x1000>, <0 0xf550d000 0 0x100>;
+	reg-names = "ni", "xram", "dma-lso", "qm-axi-reorder", "block-reset",
+		    "l3fe-axi-reorder", "dma-axi-reorder", "fttr-p6";
+	resets = <&pcie_controls 6>;
+	reset-names = "fttr-p6";
+};
+
+&mdio {
+	miniolt: olt@f {
+		compatible = "realtek,tyfza1-miniolt";
+		reg = <15>;
+		reset-gpios = <&gpio0 138 GPIO_ACTIVE_LOW>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		fttr_bosa: optical@68 {
+			compatible = "semtech,tyfza1-gn25l99";
+			reg = <0x68>;
+		};
+	};
+};

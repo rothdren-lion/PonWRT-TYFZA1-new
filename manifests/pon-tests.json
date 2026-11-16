@@ -1,0 +1,1051 @@
+{
+  "platform": {
+    "driver": "rtl9617c-pon, native Linux platform_driver",
+    "MAC_window": "0x4f5500000/0xc000",
+    "global_control": "0x4f4320094/4",
+    "fit": {
+      "kernel_version": "6.18.55",
+      "cpus": 4,
+      "kernel_load": "0x200000",
+      "fdt_load": "0x1800000",
+      "image_sha256": "a6404ed040b69717b5786de6fce5aec98a0dd53c459332379df57b15e4a12874",
+      "dtb_sha256": "78e69e859ba2f7892fd6f6e6a3242dc221ea663b8718fd5a2e05a4d06399fc01",
+      "fit_sha256": "4cae6f5f176b31585f685f3c4ac7dbd2affbb0000fdc069e10cacd952fb021f4",
+      "fit_bytes": 5208428
+    },
+    "hardware_read": {
+      "family": "epon",
+      "GLOBAL_PON_CNTL": "0x0000030f",
+      "EPON_STATUS": "0x00000021",
+      "signal_loss": 1,
+      "pcs10g_sync": 0,
+      "pcs1g_sync": 0,
+      "registered_llids": "0x00000000"
+    },
+    "raw_log": "logs/pon01-platform-state.txt"
+  },
+  "stock_mode": {
+    "PON_MODE": 2,
+    "PON_SPEED": 1,
+    "meaning": "asymmetric10G EPON",
+    "identity_and_auth": "retained only in private stock backup"
+  },
+  "serdes": {
+    "tables": 12,
+    "target_epon_d10g_records": 320,
+    "stock_loader_max_records": 512,
+    "zero_delay_us": 10,
+    "native_firmware": "artifacts/pon-serdes-firmware",
+    "profile_manifest": "manifests/pon-serdes-profiles.json",
+    "loader_machine_code_evidence": "analysis/private/target-psds-profile-loader.txt"
+  },
+  "next": "Identify/calibrate the physical BOSA; complete EPON OAM/LOID and WAN DHCP data path; port ITU MAC/PLOAM/OMCI/GEM for all manual modes; then Wi-Fi, FTTR OLT, USB, acceleration and native UBI",
+  "PON_registered_and_business_verified": false,
+  "full_main_verified": {
+    "payload": "artifacts/full-ni-pon-base-6.18.55/ram-pon",
+    "fit_sha256": "bdcf7be27718d6279fff6c9dcf41fbcc0da05d59791b81fcd8dfd1c685d6af21",
+    "revision": "r0-79bc56c",
+    "kernel": "6.18.55",
+    "same_PON_MAC_state_as_bringup": true
+  },
+  "serdes_native_first_test": {
+    "payload": "artifacts/ram-serdes-01",
+    "fit": {
+      "kernel_version": "6.18.55",
+      "cpus": 4,
+      "kernel_load": "0x200000",
+      "fdt_load": "0x1800000",
+      "image_sha256": "44305aebd10421e1d2fa9f6f34630a2014dffd12164120c8ee103490130ecc75",
+      "dtb_sha256": "07ea603f5d27b8aaa6882ad003da58d670fc7242e8d3efa05300fdb34a4dd5fd",
+      "fit_sha256": "97f52c59e44363e1243f8e9bae61de8af71a16a87e76830ab266258d34e89e9a",
+      "fit_bytes": 5212828
+    },
+    "firmware_api": "request_firmware_direct",
+    "profile": "pon_serdes_epon_d10g.bin",
+    "records_applied": 320,
+    "before": {
+      "status": "0x00004001",
+      "rx_clock": 0,
+      "tx_clock": 0,
+      "mpcp_clock": 0,
+      "init_register": "0x00000000"
+    },
+    "after": {
+      "status": "0x00005c01",
+      "rx_clock": 1,
+      "tx_clock": 1,
+      "mpcp_clock": 1,
+      "init_register": "0x00000020",
+      "mode_register": "0x0000044c",
+      "gearbox_register": "0x00000454",
+      "rx_los": 1,
+      "ber_notify": 0,
+      "configuration_error": 0,
+      "gearbox_reset_completed": true
+    },
+    "ping_mtu1500": {
+      "sent": 100,
+      "received": 100,
+      "mean_ms": 0.641,
+      "loss_percent": 0
+    },
+    "driver_rx_errors": 0,
+    "driver_rx_dropped": 0,
+    "logs": [
+      "logs/serdes01-init.txt",
+      "logs/serdes01-settled-state.txt",
+      "logs/serdes01-ping.txt"
+    ]
+  },
+  "serdes_parameter_readback": {
+    "payload": "artifacts/ram-serdes-02",
+    "registers": {
+      "0x0420": "0x4802",
+      "0x0424": "0xf0f0",
+      "0x0429": "0x8007",
+      "0x0780": "0x0018",
+      "0x0796": "0x5437",
+      "0x079f": "0x0f0f"
+    },
+    "profile_defined_values_match": true,
+    "log": "logs/serdes02-d10g-readback.txt",
+    "optical_status_raw": "0x00000009"
+  },
+  "serdes_mode_switch": {
+    "modes": [
+      "epon",
+      "epon-bi10g",
+      "epon-d10g"
+    ],
+    "profile_rows_each": 320,
+    "mode_registers": [
+      "0x0000040c",
+      "0x0000046c",
+      "0x0000044c"
+    ],
+    "clock_status_each": "0x00005c01",
+    "parameter_0x796": [
+      "0x5072",
+      "0x5477",
+      "0x5437"
+    ],
+    "rx_errors_after": 0,
+    "log": "logs/serdes02-mode-switch.txt",
+    "signal_loss": 1,
+    "PON_registration_verified": false
+  },
+  "native_MAC_PCS_FEC_test": {
+    "payload": "artifacts/ram-epon-01",
+    "fit": {
+      "kernel_version": "6.18.55",
+      "cpus": 4,
+      "kernel_load": "0x200000",
+      "fdt_load": "0x1800000",
+      "image_sha256": "deb0ded2e5fb78ca90d78d873dfb1671151c763700771d764111143b45e65339",
+      "dtb_sha256": "a6e840ae32ea82ade3909f0c7cf9e18ad32410df5a038cf1001fb23fef8ac688",
+      "fit_sha256": "f874f71558350957aa729fc7e130716f61219383fd31860b76811baaccd670b8",
+      "fit_bytes": 5214128
+    },
+    "mode": "epon-d10g",
+    "MIB_RAM_init_done": true,
+    "configuration_error": 0,
+    "epon_control": "0x000200ef",
+    "RX_XG": "0x0d481210",
+    "TX_XG": "0x1c40c030",
+    "PCS_RX": "0x00005000",
+    "PCS_TX": "0x03020000",
+    "XG_FEC": "0x00000020",
+    "frame_drop": "0x2c0ff000",
+    "RTT_RX": "0x00590048",
+    "RTT_TX": "0x00180016",
+    "serdes_init": "0x00000030",
+    "RX_errors": 0,
+    "RX_dropped": 0,
+    "log": "logs/epon01-mac-fec.txt",
+    "scope": "SerDes,MAC,PCS,FEC initialized; MPCP registration and OAM/data queues pending"
+  },
+  "stock_MPCP_configuration": {
+    "LLID_MODE": 0,
+    "LLID_NUM": 1,
+    "broadcast_LLID_index": 63,
+    "report_mode": 0,
+    "laser_on_TQ": 32,
+    "laser_off_TQ": 32,
+    "source": "analysis/private/live-files/var/config/default_scfg.txt",
+    "native_transition": "Linux delayed work and LLID state replace OSAL timers and locks"
+  },
+  "automatic_main_startup": {
+    "payload": "artifacts/full-pon-auto-init-6.18.55/ram-pon",
+    "fit": {
+      "kernel_version": "6.18.55",
+      "cpus": 4,
+      "kernel_load": "0x200000",
+      "fdt_load": "0x1800000",
+      "image_sha256": "c741648ef6334471f8a3e2c99a8e469fb5c0618aa032d9353b1f799c42e33e6e",
+      "dtb_sha256": "a6e840ae32ea82ade3909f0c7cf9e18ad32410df5a038cf1001fb23fef8ac688",
+      "fit_sha256": "37c59a602af4f01d3eced6d62b14e9beb99d6928d2cbf8f710b6d3ea3b7eb117",
+      "fit_bytes": 5895044
+    },
+    "revision": "r0-79bc56c",
+    "compiler": "GCC14.4.0 / musl",
+    "kernel": "6.18.55",
+    "automatic": true,
+    "service": "/etc/rc.d/S25pon",
+    "uci_mode": "epon-d10g",
+    "firmware_rows": 320,
+    "all_three_clocks_ready": true,
+    "MAC_prepared": true,
+    "MIB_RAM_initialized": true,
+    "configuration_errors": 0,
+    "optical_loss": true,
+    "registration_verified": false,
+    "raw_log": "logs/pon-auto-init-main.txt",
+    "udp_10000pps": {
+      "expected": 100000,
+      "received": 100000,
+      "unique": 100000,
+      "missing": 0,
+      "duplicate": 0,
+      "bad": 0,
+      "reordered": 0
+    },
+    "tcp_mac_to_device": {
+      "mode": "send",
+      "peer": [
+        "192.168.1.1",
+        52802
+      ],
+      "bytes": 16777216,
+      "seconds": 0.458,
+      "sha256": "4cc4d94ce666af30e3c1fd0798837966d07627bbfb43716382b859774d626fd5"
+    },
+    "tcp_device_to_mac": {
+      "mode": "receive",
+      "peer": [
+        "192.168.1.1",
+        48732
+      ],
+      "bytes": 16777216,
+      "seconds": 0.453,
+      "sha256": "4cc4d94ce666af30e3c1fd0798837966d07627bbfb43716382b859774d626fd5"
+    },
+    "tcp_cmp_exit": 0,
+    "TCP_checksum_errors": 0,
+    "RX_errors": 0,
+    "RX_dropped": 0,
+    "luci_login_http": 302,
+    "luci_overview_http": 200,
+    "DHCP_address": "192.0.2.51",
+    "luci_after_DHCP_http": 200
+  },
+  "identity_import": {
+    "source": "Original EPON_LLID_TBL index0; actual MAC agrees with stock hardware ELAN MAC",
+    "tool": "tools/prepare_pon_identity.py",
+    "receipt": {
+      "identity_source": "Original EPON_LLID_TBL index0",
+      "llid_count": 1,
+      "stock_configuration_sha256": "ea00049305496424b4dd22101d9588c8c12c30b397a2a52dc9485f8481624e36",
+      "scfg_sha256": "27a2ccfeda5fab6cedb3920843f33997bdf00a1df69f75e0c4e0990a9fd95987",
+      "uci_sha256": "7ad3e26454ce9806b26053b201cce54665043eea48b9fd1156be97230ab4b297"
+    },
+    "native_uci": "artifacts/pon-config/pon",
+    "note": "Byte-level extraction of the known ASCII LLID chains from the original MIB export"
+  },
+  "mpcp_first_test": {
+    "payload": "artifacts/ram-mpcp-01",
+    "fit": {
+      "kernel_version": "6.18.55",
+      "cpus": 4,
+      "kernel_load": "0x200000",
+      "fdt_load": "0x1800000",
+      "image_sha256": "8703e0c503ae916c3d4e49797d22ca41f6894f8c605a0c0f1c6a52a8582eac71",
+      "dtb_sha256": "3c6a590116066fc8164117cf462c178119e36874a2aa2a8b27081bebad46faad",
+      "fit_sha256": "fd307901838448c4ac47409bc79600a5a7bbd74a2448c2a1ffbfeee46be085a3",
+      "fit_bytes": 5215876
+    },
+    "identity_matches_original_LLID0": true,
+    "llid_count": 1,
+    "configured": true,
+    "enabled": true,
+    "registered": 0,
+    "waiting": 1,
+    "attempts_during_LOS": 0,
+    "registers": {
+      "cfg0": "0x00010084",
+      "cfg": "0x81270020",
+      "sync": "0x0020f820",
+      "timers": "0x01f41388",
+      "register_timeout": "0x8000ffff",
+      "laser_time": "0x00200020",
+      "mapping": "0x3c3f00bf"
+    },
+    "IRQ_binding": "native NE interrupt bank bit5, parent GIC SPI1",
+    "hardware_table_test": {
+      "operation": "add/delete internal index62, MAC31, LLID0x1234, unicast",
+      "add_exit": 0,
+      "readback": "entry0 index62 mac31 llid1234 multicast0",
+      "delete_exit": 0,
+      "table_empty_after": true,
+      "proves": "hardware LLID access API; not OLT registration"
+    },
+    "rx_errors": 0,
+    "raw_logs": [
+      "logs/mpcp01-configure.txt",
+      "logs/mpcp01-llid-access.txt",
+      "logs/mpcp01-count-switch.txt"
+    ],
+    "count_switch": {
+      "counts": [
+        4,
+        32,
+        1
+      ],
+      "waiting": [
+        "0x0000000f",
+        "0xffffffff",
+        "0x00000001"
+      ],
+      "cfg0": [
+        "0x20010084",
+        "0x20010084",
+        "0x00010084"
+      ],
+      "sync": [
+        "0x0020e020",
+        "0x00200020",
+        "0x0020f820"
+      ]
+    }
+  },
+  "MPCP_main_auto": {
+    "payload": "artifacts/full-pon-mpcp-6.18.55/ram-pon",
+    "fit": {
+      "kernel_version": "6.18.55",
+      "cpus": 4,
+      "kernel_load": "0x200000",
+      "fdt_load": "0x1800000",
+      "image_sha256": "a78f9f5579a2dbc45d4b4e87074f1d8526100543a8149bcea3c5062bdedb78f0",
+      "dtb_sha256": "3c6a590116066fc8164117cf462c178119e36874a2aa2a8b27081bebad46faad",
+      "fit_sha256": "4ea5e23fe4cab4932d974c908fc60233fc8f44e11ed2b58f88e6e300753a9ade",
+      "fit_bytes": 5897256
+    },
+    "revision": "r0-79bc56c",
+    "kernel": "6.18.55",
+    "compiler": "GCC14.4.0",
+    "automatic_MPCP_configured_at_seconds": 14.49,
+    "identity_matches_stock": true,
+    "LLIDs": 1,
+    "waiting": 1,
+    "registered": 0,
+    "attempts_during_LOS": 0,
+    "reload_success": true,
+    "RX_errors": 0,
+    "RX_dropped": 0,
+    "logs": [
+      "logs/mpcp-main-auto.txt",
+      "logs/mpcp-main-reload.txt"
+    ]
+  },
+  "PDC_first_test": {
+    "payload": "artifacts/ram-pdc-01",
+    "fit": {
+      "kernel_version": "6.18.55",
+      "cpus": 4,
+      "kernel_load": "0x200000",
+      "fdt_load": "0x1800000",
+      "image_sha256": "e0e37a8a8086f6360afe5be2e0890ad2837db26d486f88959492021996f4b803",
+      "dtb_sha256": "3c6a590116066fc8164117cf462c178119e36874a2aa2a8b27081bebad46faad",
+      "fit_sha256": "c80ff33a7a86432bea479f2e9df1a30ba767d59d87dd4601f956631095cb4f67",
+      "fit_bytes": 5217024
+    },
+    "map_entries_written": 256,
+    "control": "0x00000007",
+    "counter_cfg": "0x00000000",
+    "samples": {
+      "0": "0x00008e80/0x00000000",
+      "31": "0x00008e80/0x00000000",
+      "63": "0x00008e80/0x00000000",
+      "64": "0x00008e87/0x00000000",
+      "127": "0x00008e87/0x00000000",
+      "192": "0x00008e87/0x00000000",
+      "255": "0x00008e87/0x00000000"
+    },
+    "logical_destination": 16,
+    "PON_source": 7,
+    "FE_bypass": true,
+    "control_frame_cos": 7,
+    "repeat_init_verified": true,
+    "rx_errors": 0,
+    "rx_dropped": 0,
+    "logs": [
+      "logs/pdc01-configuration.txt",
+      "logs/pdc01-reconfigure.txt"
+    ],
+    "scope": "Hardware downstream map configuration/readback; optical packets pending PCS sync"
+  },
+  "MPCP_PDC_main_auto": {
+    "payload": "artifacts/full-pon-mpcp-pdc-6.18.55/ram-pon",
+    "fit": {
+      "kernel_version": "6.18.55",
+      "cpus": 4,
+      "kernel_load": "0x200000",
+      "fdt_load": "0x1800000",
+      "image_sha256": "6e5c7875a5f2baebfbe4384ea388dbd04c43c140de2ac02a85e2ae389bb31584",
+      "dtb_sha256": "3c6a590116066fc8164117cf462c178119e36874a2aa2a8b27081bebad46faad",
+      "fit_sha256": "fe556c4135ca2e42858496faad1c10c91b5be51715b6444c05c0711d0c9eefc2",
+      "fit_bytes": 5894740
+    },
+    "revision": "r0-79bc56c",
+    "compiler": "GCC14.4.0 / musl",
+    "kernel": "6.18.55",
+    "automatic_stages": [
+      "SerDes",
+      "MAC/PCS/FEC",
+      "PDC256 entries",
+      "MPCP with original ONU identity"
+    ],
+    "PDC_time_seconds": 10.22,
+    "MPCP_time_seconds": 10.23,
+    "original_identity_matches": true,
+    "reload_verified": true,
+    "LOST_optical": true,
+    "PCS_sync_verified": false,
+    "registered_LLIDs": 0,
+    "registration_attempts_during_LOS": 0,
+    "udp10000pps": {
+      "expected": 100000,
+      "received": 100000,
+      "unique": 100000,
+      "missing": 0,
+      "duplicate": 0,
+      "bad": 0,
+      "reordered": 0
+    },
+    "tcp_mac_to_device": {
+      "mode": "send",
+      "peer": [
+        "192.168.1.1",
+        41748
+      ],
+      "bytes": 16777216,
+      "seconds": 0.441,
+      "sha256": "4cc4d94ce666af30e3c1fd0798837966d07627bbfb43716382b859774d626fd5"
+    },
+    "tcp_device_to_mac": {
+      "mode": "receive",
+      "peer": [
+        "192.168.1.1",
+        56476
+      ],
+      "bytes": 16777216,
+      "seconds": 0.472,
+      "sha256": "4cc4d94ce666af30e3c1fd0798837966d07627bbfb43716382b859774d626fd5"
+    },
+    "tcp_cmp_exit": 0,
+    "TCP_checksum_errors": 0,
+    "RX_errors": 0,
+    "RX_dropped": 0,
+    "LuCI_login_http": 302,
+    "LuCI_overview_http": 200,
+    "logs": [
+      "logs/mpcp-pdc-main-auto.txt",
+      "logs/mpcp-pdc-main-reload.txt"
+    ]
+  },
+  "native_PUC": {
+    "source": "GPL ca-network-engine/aal-77c/aal_puc.c and Taurus register header",
+    "driver": "rtl9617c-pon-puc.c",
+    "fit": {
+      "kernel_version": "6.18.55",
+      "cpus": 4,
+      "kernel_load": "0x200000",
+      "fdt_load": "0x1800000",
+      "image_sha256": "d538d46eb5e4c704304af32d8129f54a4456fcc6a8f50d9fb2dd3d119bc4980c",
+      "dtb_sha256": "bc87f468bdff3a81179d93361bd7d49b73308ec23e55e6c553d382a4ebb6360f",
+      "fit_sha256": "168a27eb5ba659b4ba252ffd73324d1f2a4111c38a3f24fca4323bce8454ed7e",
+      "fit_bytes": 5217988
+    },
+    "payload": "artifacts/ram-puc-02",
+    "PVT_entries": 64,
+    "CIR_entries": 256,
+    "PIR_entries": 256,
+    "modes_verified": [
+      {
+        "LLIDs": 1,
+        "queues_per_LLID": 8
+      },
+      {
+        "LLIDs": 4,
+        "queues_per_LLID": 8
+      },
+      {
+        "LLIDs": 32,
+        "queues_per_LLID": 4
+      }
+    ],
+    "port0_single_LLID": [
+      "1c0a0300",
+      "c1a0b048",
+      "00001083",
+      "00000000",
+      "00000000"
+    ],
+    "port1_single_LLID": [
+      "00000000",
+      "00000000",
+      "00000000",
+      "00000000",
+      "00000000"
+    ],
+    "CIR_PIR_readback_samples": [
+      0,
+      7,
+      127,
+      255
+    ],
+    "CIR_config": {
+      "rate_k": 0,
+      "rate_m": 0,
+      "burst": 0,
+      "enable": 2
+    },
+    "PIR_config": {
+      "rate_k": 1023,
+      "rate_m": 65535,
+      "burst": 4095,
+      "enable": 2
+    },
+    "token_count_field": "DATA1[29:9] is a dynamic hardware counter",
+    "NI_report_threshold": "00370052",
+    "NI_report_low": 82,
+    "NI_report_high": 220,
+    "buffer_limits": [
+      "000007a0",
+      "000003b0",
+      "00000200"
+    ],
+    "report_thresholds": [
+      "ffff8000",
+      "80008000"
+    ],
+    "special_control_queue": 127,
+    "configuration_error": 0,
+    "hardware_queue_mapping_verified": true,
+    "optical_transmission_verified": false,
+    "logs": [
+      "logs/puc01-configure.txt",
+      "logs/puc01-mode-switch.txt",
+      "logs/puc01-decoded-port0.json",
+      "logs/puc02-readback.txt",
+      "logs/puc02-lan-state.txt",
+      "logs/puc02-dtb-validation.json"
+    ],
+    "full_main": {
+      "payload": "artifacts/full-pon-puc02-6.18.55/ram-pon",
+      "fit": {
+        "kernel_version": "6.18.55",
+        "cpus": 4,
+        "kernel_load": "0x200000",
+        "fdt_load": "0x1800000",
+        "image_sha256": "76d93224498acdaca1260f0e9d0bf09dac2f5e14a3e9ce3599015a3392219262",
+        "dtb_sha256": "bc87f468bdff3a81179d93361bd7d49b73308ec23e55e6c553d382a4ebb6360f",
+        "fit_sha256": "810465cb518aa24a38723a54bd30fc2bfd817e8dc8177315b8f464030451185b",
+        "fit_bytes": 5896572
+      },
+      "revision": "r0-79bc56c",
+      "kernel": "6.18.55",
+      "compiler": "OpenWrt GCC14.4/musl",
+      "background_unit": "ponwrt-tyfza1-lan-20261008-064625",
+      "build_exit": 0,
+      "automatic_startup": true,
+      "PUC_initialized_at_seconds": 14.749109,
+      "MPCP_initialized_at_seconds": 14.766676,
+      "startup_order": [
+        "SerDes",
+        "ONU identity and LLID count",
+        "MAC/PCS/FEC",
+        "PUC",
+        "PDC",
+        "MPCP"
+      ],
+      "reload_verified": true,
+      "signal_loss": 1,
+      "PCS_sync": false,
+      "registered_LLIDs": 0,
+      "UDP": {
+        "expected": 100000,
+        "received": 100000,
+        "unique": 100000,
+        "missing": 0,
+        "duplicate": 0,
+        "bad": 0,
+        "reordered": 0
+      },
+      "TCP_send": {
+        "mode": "send",
+        "peer": [
+          "192.168.1.1",
+          36318
+        ],
+        "bytes": 16777216,
+        "seconds": 0.514,
+        "sha256": "4cc4d94ce666af30e3c1fd0798837966d07627bbfb43716382b859774d626fd5"
+      },
+      "TCP_receive": {
+        "mode": "receive",
+        "peer": [
+          "192.168.1.1",
+          50814
+        ],
+        "bytes": 16777216,
+        "seconds": 0.465,
+        "sha256": "4cc4d94ce666af30e3c1fd0798837966d07627bbfb43716382b859774d626fd5"
+      },
+      "TCP_roundtrip_cmp_exit": 0,
+      "TCP_checksum_errors": 0,
+      "RX_errors": 0,
+      "RX_dropped": 0,
+      "logs": [
+        "logs/puc02-main-startup.txt",
+        "logs/puc02-main-reload-and-lan.txt",
+        "logs/puc02-main-udp-receive.txt",
+        "logs/puc02-main-udp-send.json",
+        "logs/puc02-main-tcp-device-receive.txt",
+        "logs/puc02-main-dhcp.txt",
+        "logs/puc02-main-luci.json",
+        "logs/puc02-main-final-system.txt"
+      ],
+      "DHCP": {
+        "interface": "Mac en5",
+        "address": "192.0.2.51",
+        "server": "192.168.1.1",
+        "ACK": true,
+        "log": "logs/puc02-main-dhcp.txt"
+      },
+      "LuCI": {
+        "login_status": "302",
+        "overview_status": "200",
+        "login_exit": 0,
+        "overview_exit": 0
+      }
+    }
+  },
+  "native_OAM_transport": {
+    "driver": "rtl9617c-pon-oam.c",
+    "netdev": "pon-oam0",
+    "userspace_API": "AF_PACKET, EtherType8809/subtype03",
+    "reference": "GPL RTL8277C EPON DAL OAM tx and NI receive hook",
+    "TX_header_A": {
+      "COS": 7,
+      "LDPID": 15,
+      "LSPID": 17,
+      "FE_bypass": 1,
+      "no_drop": 1,
+      "DMA_VP": 8
+    },
+    "TX_internal_prefix_bytes": 16,
+    "RX_internal_prefix_bytes": [
+      16,
+      20
+    ],
+    "LLID_TX_selection": "SO_PRIORITY[21:16]",
+    "software_format_test": {
+      "script": "scripts/test_pon_oam_format.py",
+      "ASan_UBSan": true,
+      "passed": true,
+      "cases": [
+        "SDK literal TX prefix",
+        "RX OAM container",
+        "single VLAN container",
+        "other Slow Protocol subtype",
+        "truncated frames"
+      ]
+    },
+    "shared_NI_lifecycle": {
+      "raw_log": "logs/serial-20261008-071004.txt",
+      "LAN_down_OAM_up": {
+        "DMA_CTRL": "0000001d",
+        "VP_enable": 1,
+        "QM_RMU": "80000000",
+        "QM_ES": "8462ff01"
+      },
+      "both_down": {
+        "DMA_CTRL": "0000001c",
+        "VP_enable": 0,
+        "QM_RMU": "00000000",
+        "QM_ES": "0462ff01"
+      },
+      "OAM_opened_first": {
+        "DMA_CTRL": "0000001d",
+        "VP_enable": 1,
+        "QM_RMU": "80000000",
+        "QM_ES": "8462ff01"
+      },
+      "LAN_recovered_speed_Mbps": 1000,
+      "RX_errors_after": 0,
+      "RX_dropped_after": 0
+    },
+    "MAC_enable_d10g": {
+      "RX_XG": "0d481290",
+      "TX_XG": "1c40c030",
+      "RX_1G": "0c002100",
+      "TX_1G": "0001c001"
+    },
+    "socket_probe": {
+      "submitted": 10,
+      "frame_bytes": 60,
+      "TX_DMA_completions": 0,
+      "signal_loss": 1,
+      "carrier": 0,
+      "log": "logs/oam01-submit.txt"
+    },
+    "optical_OAM_roundtrip_verified": false,
+    "business_PON_netdev_implemented": false,
+    "OAM_discovery_auth_daemon_implemented": false,
+    "main_data_path_regression": {
+      "payload": "artifacts/full-pon-oam02-6.18.55/ram-pon",
+      "fit": {
+        "kernel_version": "6.18.55",
+        "cpus": 4,
+        "kernel_load": "0x200000",
+        "fdt_load": "0x1800000",
+        "image_sha256": "c7fd719a3f96d0465c0d688f498c14361e79e831ee937a591a8751db5a824250",
+        "dtb_sha256": "bc87f468bdff3a81179d93361bd7d49b73308ec23e55e6c553d382a4ebb6360f",
+        "fit_sha256": "4977adc3133ef16461447767dcd23bfb11a8ab1e35712d5ca3bf57ab1d864512",
+        "fit_bytes": 5901844
+      },
+      "revision": "r0-79bc56c",
+      "kernel": "6.18.55",
+      "compiler": "OpenWrt GCC14.4/musl",
+      "UDP": {
+        "expected": 100000,
+        "received": 100000,
+        "unique": 100000,
+        "missing": 0,
+        "duplicate": 0,
+        "bad": 0,
+        "reordered": 0
+      },
+      "TCP_send": {
+        "mode": "send",
+        "peer": [
+          "192.168.1.1",
+          40502
+        ],
+        "bytes": 16777216,
+        "seconds": 0.313,
+        "sha256": "4cc4d94ce666af30e3c1fd0798837966d07627bbfb43716382b859774d626fd5"
+      },
+      "TCP_receive": {
+        "mode": "receive",
+        "peer": [
+          "192.168.1.1",
+          58098
+        ],
+        "bytes": 16777216,
+        "seconds": 0.49,
+        "sha256": "4cc4d94ce666af30e3c1fd0798837966d07627bbfb43716382b859774d626fd5"
+      },
+      "TCP_roundtrip_cmp_exit": 0,
+      "TCP_checksum_errors": 0,
+      "RX_errors": 0,
+      "RX_dropped": 0
+    },
+    "logs": [
+      "logs/oam01-configure.txt",
+      "logs/oam01-shared-reopen.txt",
+      "logs/oam01-main-startup.txt",
+      "logs/oam01-main-reload.txt",
+      "logs/oam02-main-startup.txt",
+      "logs/oam02-main-lan-state.txt",
+      "logs/oam02-main-dtb.json"
+    ],
+    "MAC_mode_enable_verified": {
+      "epon": {
+        "RX_1G": "0c002101",
+        "TX_1G": "0001c001",
+        "RX_XG": "0d481210",
+        "TX_XG": "1c40c030"
+      },
+      "epon-bi10g": {
+        "RX_1G": "0c002100",
+        "TX_1G": "0001c000",
+        "RX_XG": "0d481290",
+        "TX_XG": "1c40c038"
+      },
+      "epon-d10g": {
+        "RX_1G": "0c002100",
+        "TX_1G": "0001c001",
+        "RX_XG": "0d481290",
+        "TX_XG": "1c40c030"
+      },
+      "log": "logs/oam02-main-mode-traffic.txt",
+      "restored_mode": "epon-d10g",
+      "signal_loss": 1,
+      "registered": false,
+      "RX_errors": 0,
+      "RX_dropped": 0
+    }
+  },
+  "protocol_selection": {
+    "policy": "manual only, per user instruction 2026-10-08",
+    "automatic_detection_implemented": false,
+    "source_comparison": "logs/pon-mode-source-comparison.json",
+    "modes": [
+      {
+        "mode": "epon",
+        "word": "0x40c",
+        "burst_page": 62,
+        "profile_present": true,
+        "MAC_registration_hardware_verified": false
+      },
+      {
+        "mode": "epon-d10g",
+        "word": "0x44c",
+        "burst_page": 60,
+        "profile_present": true,
+        "MAC_registration_hardware_verified": false
+      },
+      {
+        "mode": "epon-bi10g",
+        "word": "0x46c",
+        "burst_page": 60,
+        "profile_present": true,
+        "MAC_registration_hardware_verified": false
+      },
+      {
+        "mode": "gpon",
+        "word": "0x408",
+        "burst_page": 61,
+        "profile_present": true,
+        "MAC_registration_hardware_verified": false
+      },
+      {
+        "mode": "xgpon",
+        "word": "0x448",
+        "burst_page": 45,
+        "profile_present": true,
+        "MAC_registration_hardware_verified": false
+      },
+      {
+        "mode": "xgspon",
+        "word": "0x428",
+        "burst_page": 45,
+        "profile_present": true,
+        "MAC_registration_hardware_verified": false
+      }
+    ],
+    "ITU_MAC_PLOAM_OMCI_business_complete": false
+  },
+  "native_BOSA": {
+    "I2C_driver": "i2c-rtl9617c.c",
+    "pinctrl_driver": "pinctrl-rtl9617c.c",
+    "BOSA_driver": "rtl9617c-bosa.c",
+    "controller": "4f4329160/28",
+    "pinmux": "4f43200f0/24",
+    "pins": [
+      "GPIO_204",
+      "GPIO_205",
+      "PMUX_120"
+    ],
+    "i2c_hz": 100000,
+    "APB_hz": 125000000,
+    "prescale": 249,
+    "address": "51",
+    "calibration_bytes": 1024,
+    "calibration_sha256": "07f4014678ce52bee03b0aa2f9e2eabca85419402fcccad6b5ad07e6b18e3b5b",
+    "original_ELF_comparison": {
+      "stock_binary_sha256": "9b7b5325df846f70d527711186d661ac4398d4416499ce66d55cc02860b4d757",
+      "ASan_UBSan": true,
+      "hardware_verified": false,
+      "cases": [
+        {
+          "calibration": "original",
+          "model": "gn25l95",
+          "operations": 646,
+          "stock_function": "Semtech_GN25L95_GN25L98_GN28L95_Initialization_From_MCU",
+          "exact_match": true
+        },
+        {
+          "calibration": "original",
+          "model": "gn25l98",
+          "operations": 646,
+          "stock_function": "Semtech_GN25L95_GN25L98_GN28L95_Initialization_From_MCU",
+          "exact_match": true
+        },
+        {
+          "calibration": "original",
+          "model": "gn28l95",
+          "operations": 646,
+          "stock_function": "Semtech_GN25L95_GN25L98_GN28L95_Initialization_From_MCU",
+          "exact_match": true
+        },
+        {
+          "calibration": "original",
+          "model": "gn28l96",
+          "operations": 599,
+          "stock_function": "Semtech_GN28L96_GN28L97_GN28L98_Initialization_From_MCU",
+          "exact_match": true
+        },
+        {
+          "calibration": "original",
+          "model": "gn28l97",
+          "operations": 599,
+          "stock_function": "Semtech_GN28L96_GN28L97_GN28L98_Initialization_From_MCU",
+          "exact_match": true
+        },
+        {
+          "calibration": "pattern",
+          "model": "gn25l95",
+          "operations": 646,
+          "stock_function": "Semtech_GN25L95_GN25L98_GN28L95_Initialization_From_MCU",
+          "exact_match": true
+        },
+        {
+          "calibration": "pattern",
+          "model": "gn25l98",
+          "operations": 646,
+          "stock_function": "Semtech_GN25L95_GN25L98_GN28L95_Initialization_From_MCU",
+          "exact_match": true
+        },
+        {
+          "calibration": "pattern",
+          "model": "gn28l95",
+          "operations": 646,
+          "stock_function": "Semtech_GN25L95_GN25L98_GN28L95_Initialization_From_MCU",
+          "exact_match": true
+        },
+        {
+          "calibration": "pattern",
+          "model": "gn28l96",
+          "operations": 599,
+          "stock_function": "Semtech_GN28L96_GN28L97_GN28L98_Initialization_From_MCU",
+          "exact_match": true
+        },
+        {
+          "calibration": "pattern",
+          "model": "gn28l97",
+          "operations": 599,
+          "stock_function": "Semtech_GN28L96_GN28L97_GN28L98_Initialization_From_MCU",
+          "exact_match": true
+        }
+      ]
+    },
+    "hardware_identification_verified": false,
+    "physical_LOS_sync_registration_verified": false,
+    "full_main_build": {
+      "payload": "artifacts/full-bosa-luci03-6.18.55",
+      "build_unit": "ponwrt-tyfza1-lan-20261008-101555",
+      "required_files": [
+        {
+          "path": "etc/init.d/pon",
+          "bytes": 1335,
+          "sha256": "e7b2b1f418e0b1d3c9959d6b16a1ad67871dc5dd7ca756816cb9ace910fe612b",
+          "mode": "0o755"
+        },
+        {
+          "path": "etc/config/pon",
+          "bytes": 200,
+          "sha256": "78fa5c3642686f41a63f03f221746feaf0053878ad63f8f65cfbbd344bd76a7b",
+          "mode": "0o600"
+        },
+        {
+          "path": "lib/firmware/realtek/rtl9617c/bosa-calibration.bin",
+          "bytes": 1024,
+          "sha256": "07f4014678ce52bee03b0aa2f9e2eabca85419402fcccad6b5ad07e6b18e3b5b",
+          "mode": "0o644"
+        },
+        {
+          "path": "usr/share/rpcd/ucode/luci.tyfza1-pon",
+          "bytes": 1247,
+          "sha256": "ee2b455285d9616e1fcac394edf1b38acd9fe8a77307661809ae30d8825dec8f",
+          "mode": "0o644"
+        },
+        {
+          "path": "usr/share/rpcd/acl.d/luci-app-tyfza1-pon.json",
+          "bytes": 247,
+          "sha256": "8bcfcfcb7457a889d18ff774b6b42e4eba0cbafcc2af95b3935547dd425dcc64",
+          "mode": "0o644"
+        },
+        {
+          "path": "usr/share/luci/menu.d/luci-app-tyfza1-pon.json",
+          "bytes": 209,
+          "sha256": "1507adcff76042218b73b8efedc482d1ccccccfa96cba7126c310a0678e96309",
+          "mode": "0o644"
+        },
+        {
+          "path": "www/luci-static/resources/view/network/tyfza1-pon.js",
+          "bytes": 3374,
+          "sha256": "1a62e0f5629be112b4652c39bc448a37e271ba627231742fb7f6782cfac5eb9c",
+          "mode": "0o644"
+        }
+      ],
+      "calibration_matches_original": true,
+      "six_protocol_profiles": true,
+      "private_identity_injected": true,
+      "identity_file_mode": "0600",
+      "WAN_protocol": "dhcp",
+      "BOSA_precedes_SerDes": true,
+      "S25pon_enabled": true,
+      "hardware_boot_verified": false,
+      "FIT": {
+        "kernel_version": "6.18.55",
+        "cpus": 4,
+        "kernel_load": "0x200000",
+        "fdt_load": "0x1800000",
+        "image_sha256": "23eca6da4d209edcdbd759ecb84aeb68fb55bb8e2348d3cadc4949a9023310bc",
+        "dtb_sha256": "1287b9a90e3876bdd718e5e3ad343632513832fabe8df4d7a2688bbd6e56f65c",
+        "fit_sha256": "173fbcce88703d294baee59c94a9d6fe480426f8812317318da32af9373ea605",
+        "fit_bytes": 5934340
+      }
+    }
+  },
+  "luci_PON": {
+    "package": "luci-app-tyfza1-pon",
+    "rpc_object": "luci.tyfza1-pon",
+    "configuration": "/etc/config/pon",
+    "manual_modes": [
+      "epon",
+      "epon-d10g",
+      "epon-bi10g",
+      "gpon",
+      "xgpon",
+      "xgspon"
+    ],
+    "identity_fields": [
+      "onu_mac",
+      "loid",
+      "loid_password",
+      "serial_number",
+      "registration_id",
+      "ploam_password",
+      "vendor_id",
+      "equipment_id",
+      "hardware_version",
+      "software_version"
+    ],
+    "network_fields": [
+      "wan_protocol",
+      "wan_vlan"
+    ],
+    "runtime_identity_consumers": [
+      "onu_mac",
+      "llid_count"
+    ],
+    "credential_version_WAN_protocol_consumers_complete": false,
+    "status_test": {
+      "actual_rpcd_source_executed": true,
+      "observed_zero_and_error_fields_preserved": true,
+      "missing_device_is_null": true,
+      "LuCI_hardware_UI_verified": false
+    },
+    "hardware_browser_verified": false,
+    "full_main_payload": "artifacts/full-bosa-luci03-6.18.55"
+  },
+  "reference_lessons": {
+    "repository": "/home/leo/pon-fw-r1",
+    "control_commit": "19b698f0f8a994cd8839f07d9e733b33b8ecefc4",
+    "notes": "docs/pon-reference-lessons.md",
+    "modified": false
+  }
+}

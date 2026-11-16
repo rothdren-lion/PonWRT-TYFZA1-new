@@ -1,0 +1,427 @@
+{
+  "action_oracle": {
+    "scope": "actual stock ARM64 conversion emulated offline; no original module loaded",
+    "native_header_sha256": "4d34cf0e7e92c6110acc36cdab7f5ba348fdcde0362243e53b97720b2d2e35de",
+    "stock_module_sha256": "16840ba70afc0ae700c2d63c57b8248475a67154eef89536d90028d4fe6486d7",
+    "GPL_layout_sha256": "c010db3ede906c81eb82ea203b652ffae1b3f4dabbaea5201e4658d5dff846a9",
+    "action_groups": [
+      18,
+      20
+    ],
+    "action_bits": 224,
+    "slot_bytes": 32,
+    "fields": 67,
+    "vectors": 330,
+    "all_match_stock_machine_code": true,
+    "hardware_forwarding_verified": false
+  },
+  "key_oracle": {
+    "stock_module_sha256": "16840ba70afc0ae700c2d63c57b8248475a67154eef89536d90028d4fe6486d7",
+    "native_header_sha256": "4d34cf0e7e92c6110acc36cdab7f5ba348fdcde0362243e53b97720b2d2e35de",
+    "vectors": 320,
+    "key_bytes": 92,
+    "mask_bytes": 28,
+    "actual_stock_masked_key_and_CRC16_CRC32_match": true,
+    "protocols": [
+      "IPv4 TCP",
+      "IPv4 UDP"
+    ],
+    "LLIDs": 32,
+    "profiles": 4,
+    "tuple_rotation_mode": "neutral",
+    "hardware_access": false,
+    "VLAN_QinQ_vectors": 160
+  },
+  "native_host_test": {
+    "sanitizers": [
+      "ASan",
+      "UBSan"
+    ],
+    "mask_slots": 64,
+    "mask_bank_transactions_and_restore": true,
+    "failures_propagated": true,
+    "age_slots_preserve_neighbors": 65536,
+    "CRC16_bucket_mapping_vectors": 65536
+  },
+  "hardware_mask_test": {
+    "slot": 63,
+    "banks": 2,
+    "native_write_read_match": true,
+    "original_restored": true,
+    "PON_and_WAN_remained_up": true,
+    "HashINI": "00000000",
+    "CacheINI": "00000000",
+    "log": "logs/live-fe-mask01-device.txt"
+  },
+  "hardware_forwarding_enabled": true,
+  "scope": "first wired LAN/PON IPv4 TCP/UDP; Wi-Fi later",
+  "native_sources": {
+    "port/overlay/target/linux/rtl9617c/files-6.18/drivers/net/ethernet/realtek/rtl9617c-fe-format.h": "4d34cf0e7e92c6110acc36cdab7f5ba348fdcde0362243e53b97720b2d2e35de",
+    "port/overlay/target/linux/rtl9617c/files-6.18/drivers/net/ethernet/realtek/rtl9617c-fe-table.h": "9e2152090078ab86cd2688865a0eacf3ea947e69718834303665ce03c54a341f",
+    "port/overlay/target/linux/rtl9617c/files-6.18/drivers/net/ethernet/realtek/rtl9617c-fe-pipeline.h": "6139817974cc984e764564c62a66a41202f69640d3ded0cf00b0ba704a902e33",
+    "port/overlay/target/linux/rtl9617c/files-6.18/drivers/net/ethernet/realtek/rtl9617c-fe.c": "1c029816e360bebc5db8de0010d56c461e6572ec5272351dfb9e3db3dc62ca95",
+    "port/overlay/target/linux/rtl9617c/files-6.18/drivers/net/ethernet/realtek/rtl9617c-fe.h": "7145474ff7ba128944b6dec06d651baca4c4a2d8087a255b7075098b8bfa384a"
+  },
+  "hardware_CRC": {
+    "vectors": 128,
+    "network_fields": "IPv4 TCP/UDP five-tuple plus LSPID0/7",
+    "full_tuple_matches": true,
+    "CRC16_and_CRC32_match": true,
+    "input": "1024-bit Header-I",
+    "mask_slot": 63,
+    "original_mask_restored": true,
+    "log": "logs/live-fe-crc03-device.txt",
+    "SWO_metadata_gap": "orig_lspid, POL_ID and profile not emitted by the tested SWO diagnostic input; actual ingress metadata still to verify"
+  },
+  "hardware_DMA_tables": {
+    "coherent_allocation_bytes": 151552,
+    "Hash_entries": 4096,
+    "bucket_entries": 32,
+    "action_bytes": 32,
+    "default_bytes": 16,
+    "cache_entries": 256,
+    "cache_action": "internal224-bit SRAM",
+    "CCI_high_address_alias": 2,
+    "hardware_memory_initialization_completed": true,
+    "original_registers_restored": true,
+    "log": "logs/live-fe-memory01-device.txt"
+  },
+  "hardware_DMA_fetch": {
+    "Hash_CRC32_read_from_CPU_DMA_memory": "12345678",
+    "NAT_action_bits": 224,
+    "all_action_words_match": true,
+    "cache_allocation_location": "stage3 loc=1",
+    "stage2_loc0_result": "cache key read; action remained zero",
+    "invalidation_and_age_removal": true,
+    "log": "logs/live-fe-fetch04-device.txt",
+    "actual_packet_forwarding_verified": false
+  },
+  "hardware_static_packet": {
+    "scope": "NI DMA injection through internal L3PID25/PDPID13, Hash profile0, packet editor, CPU16 capture",
+    "five_tuple": "192.0.2.105:53000 -> 192.168.1.1:18082 UDP",
+    "Hash_index": 1280,
+    "CRC32": "ceb0f986",
+    "CRC16": "5141",
+    "result": [
+      {
+        "DA": "020000000060",
+        "SA": "02000000005f",
+        "TTL": 63,
+        "source_IP": "198.51.100.1",
+        "source_port": 62000,
+        "IP_checksum_valid": true,
+        "UDP_checksum_valid": true,
+        "payload_intact": true
+      }
+    ],
+    "source_MAC": "02:00:00:00:00:28",
+    "destination_MAC": "02:00:00:00:00:29",
+    "source_CAM_index": 14,
+    "egress_interface_index": 31,
+    "FDB_index": 3056,
+    "payload": "TYFZA1-FE-NAT-TEST",
+    "IPv4_checksum": true,
+    "UDP_nonzero_checksum": true,
+    "log": "logs/live-fe-mac06-device.txt",
+    "private_pcap": "analysis/private/live-oam/fe-mac06.pcap"
+  },
+  "hardware_LAN_wire_egress": {
+    "scope": "same NI-injected matched flow with LDPID0 hardware output",
+    "wire_capture": "logs/fe-wire-lan01.pcap",
+    "packets_observed": 1,
+    "CPU_RX_before": 7626,
+    "CPU_RX_after": 7626,
+    "actual_packet_on_Mac_en5": true,
+    "log": "logs/live-fe-wire01-device.txt",
+    "external_LAN_ingress_verified": false,
+    "PON_business_hardware_offload_verified": false
+  },
+  "new_findings": [
+    "TTL mask selector0 ignores TTL; selector3 includes hardware TTL-range code and caused real packet Hash miss.",
+    "FDB commands require cpu_opt_mode bit31; original mode restored after each command.",
+    "FDB append returns status5 without usable destination index; relookup yields actual index3056.",
+    "Source MAC CAM is selector3, proven by this machine table IDs20/23 and assembler; old reference comment selector4 is obsolete.",
+    "Source MAC rewrite uses smac_trans0 with valid egress L3 interface;1 is the original-MAC mode.",
+    "Real PON LLID0 Header-I selected LSPID7; ignored orig_lspid must be zero before CRC (actual masked word22=00000700, not0000071c).",
+    "PDC FE bypass sets t0_ctrl1 and skips Hash; normal business ingress clears that bit, while OAM stays on CPU.",
+    "Normal action bit42 enables64 TX IFID counter slots; actual3-packet/byte deltas verified in both directions."
+  ],
+  "physical_LAN_ingress_test": {
+    "result": "physical LAN->ASIC->LAN and LAN->XEPON->LAN static rules passed",
+    "NI_RXctrl": "default CPU16 target changed to internal LAN L3 connector25",
+    "ICLS_and_PONCLE_modifications_required": false,
+    "PDC_business_LLID0": "destination24 and FE bypass cleared; control LLID entries unchanged",
+    "rollback": "restore LAN RXctrl and PDC ingress before detaching DMA; restore original maps/classifier/FDB/CAM/registers",
+    "PON_authentication_and_WAN_restored": true,
+    "next": "integrate native Linux flowtable callbacks, counters/aging and mode lifecycle; then Wi-Fi",
+    "serial_log": "logs/fe-physical-lan-pon-device.txt"
+  },
+  "hardware_LAN_physical_ingress": {
+    "fixed_Ethernet_frames": 10,
+    "ASIC_NAT_MAC_TTL_checksums_and_payload_valid": true,
+    "wire_pcap": "logs/fe-physical-wire02.pcap",
+    "pcap_sha256": "2d4a823ead993e09a997a4c16f02ce7110079ed8cb7aeaa51740a4ad8a66d8af",
+    "check": "logs/fe-physical-wire02-check.json",
+    "minimal_ingress_setup": "NI RXctrl destination25; ICLS and PONCLE tables unchanged"
+  },
+  "hardware_XEPON_bidirectional_static": {
+    "protocol": "epon-d10g (10G downstream /1G upstream)",
+    "LLID_index": 0,
+    "LAN_requests": 3,
+    "LAN_replies": 3,
+    "IPv4_and_UDP_checksums_valid": true,
+    "NAT_SIP_and_port_upstream": true,
+    "NAT_DIP_and_port_downstream": true,
+    "wire_pcap": "logs/fe-bidir-dns04.pcap",
+    "pcap_sha256": "2cb618017e9e13127206a52c1481ccfc53ec00d47579ab65c230b0139fab0228",
+    "check": "logs/fe-bidir-dns04-check.json",
+    "forward_CRC32": "a5d66a59",
+    "forward_CRC16": "4c6f",
+    "reverse_CRC32": "6b393d94",
+    "reverse_CRC16": "ff4b",
+    "CPU_bypass_and_deletion_check": "logs/fe-bidir-lifecycle02-check.json",
+    "hardware_phase_test_frames_on_CPU": 0,
+    "stale_hardware_replies_after_delete": 0,
+    "CPU_miss_after_delete_verified": true,
+    "scope": "Two static IPv4/UDP rules; dynamic Linux flowtable and other EPON optical modes not yet accepted"
+  },
+  "hardware_flow_counters": {
+    "TX_IFID_slots": 64,
+    "enable": "normal action L3_IF_COUNTER_EN bit42",
+    "forward_packets": 3,
+    "forward_bytes": 213,
+    "reverse_packets": 3,
+    "reverse_bytes": 1275,
+    "dropped_packets": 0,
+    "log": "logs/fe-physical-lan-pon-device.txt",
+    "Hash_age_observation": "initial age1 stayed1 across packet hits with current configuration; use verified per-flow IFID counters for activity until age behavior is resolved"
+  },
+  "Linux_flowtable_backend": {
+    "callbacks": [
+      "TC_SETUP_FT",
+      "FLOW_CLS_REPLACE",
+      "FLOW_CLS_DESTROY",
+      "FLOW_CLS_STATS"
+    ],
+    "protocols_verified": [
+      "IPv4 UDP",
+      "IPv4 TCP"
+    ],
+    "counter_slots": 64,
+    "Hash_entries": 4096,
+    "default_boot_enabled": false,
+    "dynamic_hardware_UDP_verified": true,
+    "dynamic_hardware_TCP_verified": true,
+    "UDP_evidence": "logs/fe-dynamic-udp02-check.json",
+    "TCP_evidence": "logs/fe-dynamic-tcp02-check.json",
+    "MPCP_stop_clears_FE_and_restores_CPU_PDC": true,
+    "control_evidence": "logs/flowtable04-mpcp-stop-restart.txt",
+    "registration_authentication_recovered": "logs/flowtable04-restart-recovered.txt",
+    "GRO_evidence_limit": "GRO merges software packets;nonzero target CPU frames are not hardware bypass evidence",
+    "unverified_or_pending": [
+      "UCI/LuCI persistent enable",
+      "IPv6/VLAN/tunnel hardware rules",
+      "dual-address NAT",
+      "other EPON optical links",
+      "throughput and long-duration validation"
+    ]
+  },
+  "native_flow_tests": {
+    "Linux_NAT_builders_vectors": 1024,
+    "source_parser_test": "scripts/test_fe_flow_parser.py",
+    "MAC_refs_release_retry": "scripts/test_fe_flow_release.py",
+    "IP_bytes_idle_lastused_and_counter_wrap": "scripts/test_fe_flow_stats.py",
+    "sanitizers": [
+      "ASan",
+      "UBSan"
+    ]
+  },
+  "latest_native_boot": {
+    "payload": "artifacts/full-pon-offload-ui01-6.18.55",
+    "build_unit": "ponwrt-tyfza1-lan-20261009-043249",
+    "FIT_SHA256": "696e7da4a1823b653abf0a51adfd68d8bc497dadfd221cd795ff3e9933ae565d",
+    "FIT_bytes": 6088340,
+    "hardware_boot_verified": true,
+    "PON_auth_accepted": true,
+    "kernel_cpus": 4,
+    "default_FE_enabled": true,
+    "payload_verifier": "logs/offload-ui01-payload-verification.json",
+    "note": "IPv6 route/cache_ctrl1 source changes are in the next detached build;this boot predates them"
+  },
+  "persistent_control": {
+    "UCI": "firewall.@defaults[0].flow_offloading_hw",
+    "requires_software_flow_offloading": true,
+    "fresh_default": true,
+    "explicit_disabled_value_preserved": true,
+    "firewall_trigger_changes_FE_without_OAM_restart": true,
+    "live_status": "logs/pon-offload-ui-live-status.json",
+    "trigger_evidence": "logs/pon-offload-firewall-trigger.txt",
+    "default_boot": "logs/offload-ui01-default-boot-device.txt"
+  },
+  "hardware_IPv6_format": {
+    "vectors": 128,
+    "packet_type": 6,
+    "CRC16_CRC32_and_full128bit_addresses_match_ASIC": true,
+    "idle_mask_restored": true,
+    "evidence": "logs/live-fe-ipv6-type01-device.txt",
+    "IPv4_on_same_full128_mask_vectors": 128
+  },
+  "hardware_IPv6_static_route": {
+    "scope": "NI DMA injected IPv6 route through ASIC and LAN physical output",
+    "frames": [
+      {
+        "source": "2001:db8:0:1::2",
+        "destination": "2001:db8:0:2::2",
+        "hop_limit": 63,
+        "MAC_source": "02:00:00:00:00:28",
+        "MAC_destination": "02:00:00:00:00:29",
+        "UDP_checksum_valid": true,
+        "payload_valid": true
+      }
+    ],
+    "CPU_RX_before": 2623,
+    "CPU_RX_after": 2623,
+    "wire_pcap_sha256": "a8c790935a6bfec95ccd94f73081e62b5130b2edf767d5e47a33146b78817504",
+    "CRC32": "11551d93",
+    "CRC16": "51af",
+    "Hash_index": 1280,
+    "previous_capture_filter_address_corrected": true
+  },
+  "original_path_alignment": {
+    "UNB_BND": "Airoha FOE terminology; current Cortina main Hash flow-hit path has bound-flow semantics",
+    "local_original_machine_code": "ca-ne.ko aal_hash_add/aal_hash_profile_init/convert_act_flow_nomal_mode/_hash_hw_entry_set",
+    "GPL_FC_path": "rtk_8277c_asic_flow_add:path34/path5 ->aal_hash_add",
+    "type0_cache_ctrl1": 1,
+    "hardware_cache_ctrl1_verified_both_directions": true,
+    "evidence": "logs/fe-stock-cache-alignment-device.txt",
+    "original_default_Hash_count": 65536,
+    "native_Hash_count": 65536,
+    "original_default_cache_count": 2048,
+    "native_cache_count": 2048,
+    "original_default_action_slot_bytes": 48,
+    "native_action_slot_bytes": 48,
+    "original_non_shaper_age": 1,
+    "native_dynamic_age": 1,
+    "native_lifetime": "Linux flowtable lastused from dedicated IFID counters",
+    "capacity_cache_aging_fully_aligned": false,
+    "original_defaults_are_not_runtime_register_snapshots": true,
+    "automatic_cache_occupancy_verified": true,
+    "capacity_source_and_diagnostic_aligned": true,
+    "capacity_integrated_image_boot_verified": false,
+    "running_image_Hash_count": 4096,
+    "capacity_hardware_test": {
+      "evidence": "logs/fe-stock-capacity02-device.txt",
+      "DMA_bytes": 3411968,
+      "HashINI": "0000009f",
+      "CacheINI": "00010304",
+      "indices": [
+        19552,
+        65344
+      ],
+      "packets": [
+        3,
+        3
+      ],
+      "bytes": [
+        213,
+        1275
+      ],
+      "drops": [
+        0,
+        0
+      ],
+      "automatic_cache_entries": 0,
+      "manual_cache_DMA_fetch_verified": true,
+      "source_sha256": "1f8d787241cc17f355f8794c6d4cc3077bd1a37ceb016614e090934a6f0b19fc"
+    },
+    "cache_check_mask": {
+      "original_aal_hash_add": "chk_msk_ptr1=mask_id",
+      "native_previous": 0,
+      "native_flow_mask": 63,
+      "source_corrected": true,
+      "hardware_test_pending": false,
+      "hardware_test_passed": true
+    },
+    "original_cache_init_machine_code": {
+      "evidence": "logs/original-hash-cache-init.asm",
+      "CACHE_MISC": "a0000000",
+      "CACHE_AGE10": "ffffffff",
+      "CACHE_AGE32": "ffffffff"
+    },
+    "original_FC_aging_countdown": false,
+    "original_FC_liveness": "aal_hash_traffic_status_get:32 ages per row,active if age>1,restore valid age1",
+    "automatic_cache_test": {
+      "evidence": [
+        "logs/fe-stock-cache05-device.txt",
+        "logs/fe-stock-cache05-wire-check.json",
+        "logs/fe-stock-cache06-device.txt",
+        "logs/fe-stock-cache06-cpu-check.json"
+      ],
+      "cache_indices": [
+        608,
+        2016
+      ],
+      "main_idle_age": 1,
+      "main_hit_age": 6,
+      "automatic_entries": 2,
+      "delete_and_resend_entries": 0,
+      "hardware_packets_before_after_delete": [
+        3,
+        3
+      ],
+      "CPU_GRO_records_after_delete": 1,
+      "CPU_GRO_DNS_payload_copies": 3,
+      "CacheINI": "00050304",
+      "tuple_priority": 0,
+      "main_aging_countdown": 0,
+      "wire_requests": 3,
+      "wire_replies": 3,
+      "wire_checksums_valid": true
+    }
+  },
+  "native_interface_capacity": {
+    "hardware_verified": false,
+    "production_function_host_test": "logs/fe-interface-capacity.json",
+    "flows_tested": 4096,
+    "source_MACs": 15,
+    "independent_counter_owners": 32,
+    "forwarding_interfaces": 32,
+    "capacity_correction": "2026-11-10: target AAL interface table and5-bit hardware index allow32 rows;64-row software allocation could alias earlier entries. Current4096-flow test uses32 physical rows and verifies retained source-MAC/PPPoE contents after each new allocation.",
+    "other_flows": "Hash age activity only;no invented packet/byte counts",
+    "reference_Hash_hit_age_cycle": "logs/fe-stock-activity01-device.txt",
+    "reference_cycle": [
+      6,
+      1,
+      6
+    ],
+    "shared_interface_counter_bit_disabled": true
+  },
+  "native_VLAN": {
+    "hardware_verified": false,
+    "Linux_match_and_action_vectors": 288,
+    "host_test": "logs/fe-flow-parser.json",
+    "tags": 2,
+    "VID_TPID_and_count_matched": true,
+    "PCP_DEI_preserved_without_edits": true,
+    "partial_stack_with_unknown_PCP_DEI": "software",
+    "tag_protocols": [
+      "802.1Q",
+      "802.1ad"
+    ],
+    "upstream_flowtable_current_generation": "802.1Q",
+    "output_Ethernet_accounting_bytes": [
+      14,
+      18,
+      22
+    ]
+  },
+  "offline_build_20261009": {
+    "payload": "artifacts/full-pon-wired-vlan01-6.18.55",
+    "service": "ponwrt-tyfza1-lan-20261009-092739",
+    "exit_status": 0,
+    "FIT_sha256": "95f2ea01e98e400556ccf9e5b1a7b4c2b445d6675351920702add93a5ca350c7",
+    "FIT_bytes": 6089552,
+    "verification": "logs/wired-vlan01-payload-verification.json",
+    "hardware_verified": false
+  }
+}

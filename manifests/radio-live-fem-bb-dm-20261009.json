@@ -1,0 +1,218 @@
+{
+  "current_on_board": {
+    "FIT": "artifacts/full-pon-radio-xb-tssi-de01-6.18.55/ram-pcie/image.itb",
+    "sha256": "32e7fe6dc72f89f385801ce2775267b3d66c931fc0d7a2f7dcaa44d515072679",
+    "bytes": 7322244,
+    "kernel_sha256": "029e2db52f2ef14c8b5d06ca3e332a3211c8f7fb713f703d8adfd00e7fd110c0",
+    "DTB_sha256": "ed3a18f2b09dbec988883e9a36b47efdae819c82db47864deb3ad1e4eecd23ac",
+    "source_stage": "2201a0f",
+    "native_driver": "rtl_ax_ap builtin, both endpoints",
+    "cold_boot_verified": true,
+    "active_RAM_driver_override": {
+      "radio": "both endpoints C and XB",
+      "driver": "rtl_ax_ap_live",
+      "module": "artifacts/live-radio-xb-tssi02/rtl_ax_ap_live.ko",
+      "sha256": "3de28c23dd3fb2abc4afa4f4bd5bbcc25ce03299c039aea97d7e20b0cc313425",
+      "interfaces": "phy24/mon0 channel36;phy25/mon1 channel6",
+      "evidence": "manifests/radio-xb-tssi-20261010.json",
+      "boot_FIT_contains_XB_TSSI": false
+    },
+    "C_native_mac80211_monitor": true,
+    "XB_native_mac80211_monitor": true,
+    "channels": [
+      36,
+      6
+    ],
+    "actual_receive_evidence": "manifests/radio-native-tssi-builtin-20261010.json",
+    "AP_available": false,
+    "XEPON_DHCP": "192.0.2.53/24"
+  },
+  "radios": [
+    {
+      "chip": "8852C",
+      "radio_passes": [
+        2,
+        2
+      ],
+      "limit_records_base": [
+        10416,
+        6864
+      ],
+      "limit_records_FEM": [
+        5480,
+        3552
+      ],
+      "RFM": [
+        "010a0604",
+        "010a0604"
+      ],
+      "normal_gain_A": [
+        3,
+        3,
+        -2,
+        0,
+        0
+      ],
+      "normal_gain_B": [
+        2,
+        2,
+        -1,
+        -1,
+        0
+      ],
+      "hidden_gain_valid": false,
+      "thermal": [
+        28,
+        28
+      ],
+      "xtal": 71,
+      "RX_errors": 0
+    },
+    {
+      "chip": "8192XB",
+      "radio_passes": [
+        2,
+        2
+      ],
+      "limit_records_base": [
+        4452,
+        3024
+      ],
+      "limit_records_FEM": [
+        4452,
+        3024
+      ],
+      "RFM": [
+        "030a0604",
+        "030a0604"
+      ],
+      "normal_gain_A": [
+        3,
+        3,
+        -2,
+        0,
+        0
+      ],
+      "normal_gain_B": [
+        2,
+        2,
+        -1,
+        -1,
+        0
+      ],
+      "hidden_gain_valid": true,
+      "thermal": [
+        24,
+        24
+      ],
+      "xtal": 63,
+      "RX_errors": 0
+    }
+  ],
+  "calibration": [
+    {
+      "path": "lib/firmware/realtek/tyfza1/rtl8852ce/flash-calibration.bin",
+      "bytes": 66,
+      "sha256": "106750c394cf7687f752dd4d163c14cf6270e568ec0abaa4db35232030074063",
+      "hardware_settings_sha256": "71fc7a28d9edac631708a1742b9c5a4a52a6710691c876e46f1da98bcd007d6a",
+      "wlan": 0,
+      "source": "original HS flash gain,thermal,xtal,TSSI fields",
+      "physical_OTP_is_separate": true
+    },
+    {
+      "path": "lib/firmware/realtek/tyfza1/rtl8192xbe/flash-calibration.bin",
+      "bytes": 66,
+      "sha256": "48e148ab1778265ca3a7f81c155e7258a3b484052ba72b87afe08aaa50afbe09",
+      "hardware_settings_sha256": "71fc7a28d9edac631708a1742b9c5a4a52a6710691c876e46f1da98bcd007d6a",
+      "wlan": 1,
+      "source": "original HS flash gain,thermal,xtal,TSSI fields",
+      "physical_OTP_is_separate": true
+    }
+  ],
+  "post_PHY_actual_MCU_check": {
+    "diagnostic_module_sha256": "82f7d5a3c424b31a7e4daf04471c45881c74ec60d11dfdf52c7ee9799aa45835",
+    "extra_diagnostic_command_in_production_source": false,
+    "done_acks_per_chip": 2,
+    "RXQ_per_chip": 2,
+    "RX_errors": 0,
+    "log": "logs/radio-live-post-phy-ack-20261009.txt"
+  },
+  "source_parameter_repairs": [
+    {
+      "path": "lib/firmware/realtek/tyfza1/rtl8852ce/RFE54/TXPWR_LMT_RU_6G_LPI.txt",
+      "band": "5GHz",
+      "FEM": "RTK66587_BPF",
+      "RFE": 54,
+      "load_stage": "base",
+      "original_sha256": "7b63295122bb38ac76a62f052246525f094d17b48be0176c13d19da5ea2dc38f",
+      "sha256": "06dfea07f170877987d4d5eb5b670b5bec5e2d938db7a6b10c8323d9319f115a",
+      "corrections": [
+        "RU106/2T6GHzLPI: complete8-column zeroPShape row"
+      ]
+    },
+    {
+      "path": "lib/firmware/realtek/tyfza1/rtl8852ce/RFE54/TXPWR_LMT_RU_6G_VLP.txt",
+      "band": "5GHz",
+      "FEM": "RTK66587_BPF",
+      "RFE": 54,
+      "load_stage": "base",
+      "original_sha256": "dd73d905c7841f2220d3a6b0ba90a6b48cf8456ca6886837ed567d12e39beff3",
+      "sha256": "e48af225055735f5d501a2c12aab742552a62b04f4fb5921ccbb8f20310da36c",
+      "corrections": [
+        "RU106/2T6GHzVLP: restore single zeroPShape entry"
+      ]
+    }
+  ],
+  "pending": [
+    "remaining BB DM",
+    "normal PPDU/TX/WP",
+    "RF DM and calibrations",
+    "channel setup",
+    "native mac80211 AP and association"
+  ],
+  "background_candidate": {
+    "unit": "ponwrt-tyfza1-lan-20261009-233526",
+    "output": "artifacts/full-pon-radio-physts01-6.18.55",
+    "build_status": "inspect live unit",
+    "hardware_verified": false
+  },
+  "previous_on_board": {
+    "FIT": "artifacts/full-pon-radio-mac80211-rx02-signeddb-6.18.55/ram-pcie/image.itb",
+    "sha256": "aca49174f37e88cb4a05e7b433bde85dd1773f1c623f57d6590175bbd24b3368",
+    "bytes": 7315360,
+    "source_stage": "c4458e1",
+    "kernel_sha256": "18ae2848ff5ee0ef39042c1170ea4f4cbad5d46c5d52cf9afd62b4248742d512",
+    "DTB_sha256": "ed3a18f2b09dbec988883e9a36b47efdae819c82db47864deb3ad1e4eecd23ac",
+    "native_driver": "rtl_ax_ap built-in",
+    "cold_boot_verified": true,
+    "active_RAM_driver_override": {
+      "radio": "8192XB / 0001:01:00.0",
+      "driver": "rtl_ax_ap_live",
+      "module": "artifacts/live-radio-xb-monitor01/rtl_ax_ap_live.ko",
+      "sha256": "5294c84b54dde6857ff940f23f03d0e1415c288a5b56552da2e7e3f3db04b0b5",
+      "Linux_interface": "phy1 / mon1",
+      "channel": 6,
+      "raw_receive_evidence": "manifests/radio-xb-channel6-receive-20261010.json",
+      "C_still_builtin": "phy0 / mon0 / channel36",
+      "boot_FIT_contains_XB_channel_operation": false
+    },
+    "native_RX_active_both_radios": true,
+    "C_native_mac80211_monitor": true,
+    "C_channel": 36,
+    "RX_errors": 0,
+    "DACK_all_four_paths_done": true,
+    "signed_regdb_in_actual_boot_FIT": true,
+    "AP_available": false,
+    "XEPON_DHCP": "192.0.2.53/24",
+    "public_ping": "2/2",
+    "log": "logs/radio-mac80211-signeddb02-20261010.txt",
+    "receive_evidence": "manifests/radio-mac80211-signeddb02-live-20261010.json"
+  },
+  "latest_complete_candidate": {
+    "FIT": "artifacts/full-pon-radio-c-gapk01-6.18.55/ram-pcie/image.itb",
+    "source": "ff9c8d7",
+    "contains_C_GAPK": true,
+    "contains_XB_TSSI": false,
+    "hardware_boot_verified": false
+  }
+}

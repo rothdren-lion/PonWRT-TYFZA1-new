@@ -1,0 +1,73 @@
+{
+  "2026-10-07": {
+    "first_ram_boot": {
+      "kernel": "6.18.52",
+      "fit_sha256": "9edfe7e23568ed71964b1e85bba98fd2abe744e01e4d751de933452b0f4d2262",
+      "download_crc32": "37575af9",
+      "bootloader_signature_verified": true,
+      "shell": true,
+      "uart_rx_tx": true,
+      "gicv3": true,
+      "timer_mhz": 25,
+      "procd_ubus": true,
+      "watchdog_state": "active",
+      "watchdog_timeout_seconds": 30,
+      "uptime_observed_seconds": 163,
+      "cpus_online": "0",
+      "kernel_load": "0x00000000",
+      "finding": "Kernel at zero overlaps stock 4KiB VoIP reservation; next RAM FIT moves Image and entry to 0x00200000."
+    },
+    "serial_log": "logs/serial-20261007-212948.txt",
+    "smp_ram_boot": {
+      "kernel": "6.18.52",
+      "kernel_load": "0x00200000",
+      "fit_sha256": "1bcdcbc7b7fca89a5798f2ab4a492e6f89f67c73e2904c47310e17a81a744ce9",
+      "cpu_online": "0-3",
+      "gic_timer_uart_working": true,
+      "uptime_observed_seconds": 126,
+      "voip_vector_reserved": true,
+      "nand_probe_error": -95,
+      "nand_probe_cause": "supports_op rejected spi-mem dirmap op template because data.nbytes=0; template still has DATA_IN/OUT direction",
+      "fix": "Decide command-only format from data.dir==SPI_MEM_NO_DATA",
+      "qspi_regression": {
+        "before": "1 failed, 4 passed",
+        "after": "5 passed"
+      }
+    },
+    "kernel_6_18_55": {
+      "kernel_version": "6.18.55",
+      "cpus": 4,
+      "kernel_load": "0x200000",
+      "fdt_load": "0x1800000",
+      "image_sha256": "bf6cbc773558c2605afde841d640f3ecb6152ccd0c06b241cefb520f2d928110",
+      "dtb_sha256": "5ba730dffaaef3a043d717cc4f814fc30ebc4873a40d52a57213e5790dae5e8a",
+      "fit_sha256": "5edbb2481661c7bd695fccec11b724adfceabb5f7674abe87b8500a3649f3574",
+      "fit_bytes": 5189324,
+      "rootfs_revision": "r0-c759267",
+      "kernel_source_base": "OpenWrt main 79bc56cb7483bc716da07c369530b792631904b4 generic patches and rtl9617c target",
+      "compiler": "Ubuntu GCC 13.3.0",
+      "shell": true,
+      "cpu_online": "0-3",
+      "uart_rx_tx": true,
+      "nand_probe": true,
+      "mtd_partition_count": 5,
+      "ubi": {
+        "read_only": true,
+        "volumes": 11,
+        "good_pebs": 1966,
+        "bad_pebs": 0,
+        "corrupted_pebs": 0,
+        "peb_bytes": 131072,
+        "leb_bytes": 126976,
+        "vid_offset": 2048,
+        "data_offset": 4096
+      },
+      "readback_sha256": {
+        "boot_entire_2MiB": "7524c98bdfc23c387ed3a720c50839fffb36a1a1f8b9128019ca8e59dc5c957e",
+        "static_conf_entire_256KiB": "3b874d3ba46c638fc3094f8e92fb744ca974893873f8885f54e23760f9b6311b",
+        "ubi_k0_entire_volume": "4af8d36db16492b4c764bc856b04b68f4403b893d9fabc0bfe00625c509d9743"
+      },
+      "readback_matches_stock_backup": true
+    }
+  }
+}

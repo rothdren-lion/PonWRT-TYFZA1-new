@@ -1,0 +1,38 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+#ifndef TYFZA1_FTTR_OMCI_MODEL_H
+#define TYFZA1_FTTR_OMCI_MODEL_H
+
+#include <stdio.h>
+#include "omci-mib.h"
+
+struct fttr_mib_schema;
+
+struct fttr_mib_entity {
+	struct fttr_mib_entity *next;
+	const struct fttr_mib_schema *schema;
+	uint16_t class_id, instance, reported, present;
+	uint8_t data[];
+};
+
+struct fttr_mib_model {
+	struct fttr_mib_entity *entities;
+	unsigned int count, unparsed_records;
+};
+
+/* A positive result preserves an entity whose wire layout is not known. */
+int fttr_mib_model_add(struct fttr_mib_model *model, const struct fttr_mib_record *record);
+/* Private planning snapshots only; projected values are not observed MIB state. */
+int fttr_mib_model_copy(struct fttr_mib_model *copy, const struct fttr_mib_model *source);
+int fttr_mib_model_project(struct fttr_mib_model *model, uint16_t class_id, uint16_t instance,
+			   uint16_t mask, const uint8_t *value, size_t size);
+const uint8_t *fttr_mib_entity_attr(const struct fttr_mib_entity *entity, uint16_t mask, size_t *size);
+int fttr_mib_model_dump(const struct fttr_mib_model *model, FILE *file);
+/* These original classes carry Wi-Fi settings or ONU authentication secrets. */
+static inline bool fttr_mib_private(uint16_t class_id, uint16_t mask)
+{
+	return class_id == 0xff69 || class_id == 0xff6a ||
+		(class_id == 0xfffa && (mask & 0x6000)) || (class_id == 256 && (mask & 0x0060));
+}
+void fttr_mib_model_clear(struct fttr_mib_model *model);
+
+#endif

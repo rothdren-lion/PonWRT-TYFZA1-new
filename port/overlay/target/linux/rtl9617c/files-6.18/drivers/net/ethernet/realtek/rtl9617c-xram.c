@@ -1,0 +1,2139 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * RTL9617C management XRAM Ethernet path, ported to Linux netdev/NAPI/phylib.
+ * Packet format and sequences: Realtek Semiconductor Corp. 2022, GPL-2.0+,
+ * GPL-for-GP3000 5090fbcb6ba743dd7b1314811ef557bad0460147,
+ * bootloader/u-boot-2022.10/board/realtek_10G_PON/common/eth_ni.c.
+ * This first LAN path retains the PHY setup performed by the stock bootloader.
+ */
+#include <linux/bitfield.h>
+#include <linux/completion.h>
+#include <linux/crc32.h>
+#include <linux/delay.h>
+#include <linux/etherdevice.h>
+#include <linux/ethtool.h>
+#include <linux/hrtimer.h>
+#include <linux/interrupt.h>
+#include <linux/io.h>
+#include <linux/iopoll.h>
+#include <linux/if_vlan.h>
+#include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/of_mdio.h>
+#include <linux/of_net.h>
+#include <linux/phy.h>
+#include <linux/phy/phy.h>
+#include <linux/platform_device.h>
+#include <linux/rcupdate.h>
+#include <linux/rtnetlink.h>
+#include <linux/unaligned.h>
+#include <linux/tyfza1-led.h>
+#include <linux/workqueue.h>
+#include <net/gro.h>
+#include <net/sch_generic.h>
+
+#include "rtl9617c-xram-format.h"
+#include "rtl9617c-dma.h"
+#include "rtl9617c-qm.h"
+#include "rtl9617c-ni.h"
+#include <linux/rtl9617c-wifi.h>
+#include <linux/rtl9617c-fttr.h>
+#include <linux/rtl9617c-ni-table.h>
+#include "rtl9617c-fe.h"
+#include "rtl9617c-fttr-p6.h"
+#include "rtl9617c-fttr-mcast.h"
+#include "rtl9617c-mib.h"
+
+#define GLB_STATIC 0xa01c
+#define PORT_TO_CPU GENMASK(3, 0)
+#define MAC_ADDR0 0xa024
+#define MAC_ADDR1 0xa028
+#define PORT_STATIC 0xa5c0
+#define PORT_GLB 0xa5c4
+#define PORT_RX 0xa5c8
+#define PORT_TX 0xa5d4
+#define PORT_STRIDE 0x90
+#define RX_ADDR 0xaa20
+#define TX_ADDR 0xaa24
+#define XRAM_CFG 0xaa28
+#define RX_READ 0xaa2c
+#define RX_WRITE 0xaa30
+#define TX_WRITE 0xaa44
+#define TX_READ 0xaa48
+#define POINTER_MASK GENMASK(9, 0)
+#define CPU_DISABLE (BIT(0) | BIT(9))
+#define RX_PROMISC GENMASK(15, 14)
+#define XR_OWN BIT(31)
+#define PKT_SIZE GENMASK(13, 0)
+#define PKT_VALID BIT(19)
+#define PKT_ERRORS (GENMASK(23, 20) | BIT(25) | BIT(26))
+
+struct rtl_xram;
+static void rtl_fttr_rx_purge(struct rtl_xram *priv);
+struct rtl_lan {
+	struct rtl_xram *shared;
+	unsigned int port;
+};
+
+struct rtl_fttr_port {
+	struct rtl9617c_ni_endpoint endpoint;
+	struct rtl_xram *shared;
+	struct delayed_work link_work;
+};
+
+struct rtl_xram {
+	/* Primary netdev embeds the shared engine;other LANs only carry this
+	 * initial per-port member and use the same NI/DMA/QM owner. */
+	struct rtl_lan lan;
+	struct net_device *netdev;
+	struct net_device *ports[5];
+	unsigned int registered_ports;
+	struct work_struct lan4_work;
+	struct completion lan4_ready;
+	struct device *lan4_parent;
+	struct device_node *lan4_phy;
+	void __iomem *ni;
+	void __iomem *xram;
+	struct phy *sgmii;
+	unsigned int sgmii_speed;
+	struct tyfza1_led phy_led;
+	bool phy_led_registered;
+	bool native_groups_created;
+	bool wifi_started;
+	struct napi_struct napi;
+	struct hrtimer timer;
+	spinlock_t tx_lock;
+	spinlock_t rx_lock;
+	struct mutex mib_lock;
+	struct delayed_work mib_work;
+	unsigned long long mib_total[5][RTL_NI_MIB_COUNTERS];
+	bool rx_active;
+	u32 port;
+	bool tx_pending;
+	unsigned int tx_length;
+	u8 tx_buffer[2048];
+	bool dma_tx;
+	struct rtl_dma_tx dma;
+	bool qm_rx;
+	struct rtl_qm_rx qm;
+	int rx_irq;
+	bool irq_requested;
+	unsigned int engine_users;
+	struct rtl_fe *fe;
+	struct rtl_fttr_p6 p6;
+	struct net_device *fttr;
+	struct net_device *fttr_mc;
+	bool fttr_tx_active;
+	bool fttr_forwarding;
+	u16 fttr_omci_type;
+	int fttr_forward_error, fttr_forward_cleanup_error;
+	bool fttr_loading;
+	bool removing;
+};
+
+static struct rtl_xram *rtl_shared(struct net_device *dev)
+{
+	return ((struct rtl_lan *)netdev_priv(dev))->shared;
+}
+
+static unsigned int rtl_mib_read(void *context, unsigned int reg)
+{
+	struct rtl_xram *priv = context;
+
+	return readl(priv->ni + reg);
+}
+
+static void rtl_mib_write(void *context, unsigned int reg, unsigned int value)
+{
+	struct rtl_xram *priv = context;
+
+	writel(value, priv->ni + reg);
+}
+
+static int rtl_mib_indirect(void *context, unsigned int reg, unsigned int command)
+{
+	struct rtl_xram *priv = context;
+	u32 status;
+
+	writel(command, priv->ni + reg);
+	return readl_poll_timeout(priv->ni + reg, status, !(status & BIT(31)), 1, 100000);
+}
+
+int rtl9617c_ni_pm_read(struct device *dev, unsigned int port, unsigned long long counters[37])
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	const struct rtl_dq_io io = {priv, rtl_mib_read, rtl_mib_write, rtl_mib_indirect};
+	unsigned long long raw[RTL_NI_MIB_COUNTERS];
+	int ret;
+
+	if (port >= ARRAY_SIZE(priv->mib_total))
+		return -EINVAL;
+	mutex_lock(&priv->mib_lock);
+	ret = rtl_ni_mib_read(&io, port, raw);
+	if (!ret)
+		rtl_ni_mib_pm(priv->mib_total[port], raw, counters);
+	mutex_unlock(&priv->mib_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_pm_read);
+
+static void rtl_mib_work(struct work_struct *work)
+{
+	struct rtl_xram *priv = container_of(to_delayed_work(work), struct rtl_xram, mib_work);
+	unsigned long long counters[37];
+	unsigned int port;
+
+	/* Extend narrow counters independently of OAM/PM enable and client reads. */
+	for (port = 0; port < ARRAY_SIZE(priv->ports); port++) {
+		int ret;
+
+		if (!(READ_ONCE(priv->registered_ports) & BIT(port)))
+			continue;
+		ret = rtl9617c_ni_pm_read(priv->netdev->dev.parent, port, counters);
+
+		if (ret)
+			dev_err_ratelimited(priv->netdev->dev.parent, "NI port%u MIB read failed: %d\n", port, ret);
+	}
+	schedule_delayed_work(&priv->mib_work, HZ);
+}
+
+int rtl9617c_ni_fe_add_port(struct device *dev,struct net_device *netdev,unsigned int llid)
+{
+ struct rtl_xram *priv=netdev_priv(dev_get_drvdata(dev));
+ return rtl_fe_add_port(priv->fe,netdev,7,32+llid,llid);
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_fe_add_port);
+int rtl9617c_ni_itu_paths(struct device *dev, struct net_device *netdev, const struct rtl_itu_paths *paths)
+{
+ struct rtl_xram *priv=netdev_priv(dev_get_drvdata(dev));
+ return rtl_fe_set_itu_paths(priv->fe,netdev,paths);
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_itu_paths);
+int rtl9617c_ni_epon_paths(struct device *dev,const struct rtl_epon_paths *paths)
+{
+ struct rtl_xram *priv=netdev_priv(dev_get_drvdata(dev));
+ return rtl_fe_set_epon_paths(priv->fe,paths);
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_epon_paths);
+void rtl9617c_ni_fe_remove_port(struct device *dev,struct net_device *netdev)
+{
+ struct rtl_xram *priv=netdev_priv(dev_get_drvdata(dev));
+ rtl_fe_remove_port(priv->fe,netdev);
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_fe_remove_port);
+int rtl9617c_ni_fe_setup_tc(struct device *dev,struct net_device *netdev,
+ enum tc_setup_type type,void *data)
+{
+ struct rtl_xram *priv=netdev_priv(dev_get_drvdata(dev));
+ return rtl_fe_setup_tc(priv->fe,netdev,type,data);
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_fe_setup_tc);
+int rtl9617c_ni_fe_enable(struct device *dev)
+{
+ struct rtl_xram *priv=netdev_priv(dev_get_drvdata(dev));
+ return rtl_fe_enable(priv->fe);
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_fe_enable);
+int rtl9617c_ni_fe_disable(struct device *dev)
+{
+ struct rtl_xram *priv=netdev_priv(dev_get_drvdata(dev));
+ return rtl_fe_disable(priv->fe);
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_fe_disable);
+ssize_t rtl9617c_ni_fe_state(struct device *dev,char *buffer)
+{
+ struct rtl_xram *priv=netdev_priv(dev_get_drvdata(dev));
+ return rtl_fe_state(priv->fe,buffer);
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_fe_state);
+
+int rtl9617c_ni_report_configure(struct device *dev, unsigned int low, unsigned int high)
+{
+	struct net_device *netdev = dev_get_drvdata(dev);
+	struct rtl_xram *priv;
+
+	if (!netdev)
+		return -EPROBE_DEFER;
+	priv = netdev_priv(netdev);
+	writel((high << 14) | low, priv->ni + 0x96d4);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_report_configure);
+
+u32 rtl9617c_ni_report_state(struct device *dev)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	return readl(priv->ni + 0x96d4);
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_report_state);
+
+/* Original aal_l3_tm_es_ni_port_ena_set: PON ports8..23 use bits0..15. */
+u32 rtl9617c_ni_pon_gate(struct device *dev, u32 enabled)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	unsigned long flags;
+	u32 saved;
+
+	spin_lock_irqsave(&priv->tx_lock, flags);
+	saved = readl(priv->ni + 0x610c);
+	writel((saved & ~0xffffU) | (enabled & 0xffffU), priv->ni + 0x610c);
+	readl(priv->ni + 0x610c);
+	spin_unlock_irqrestore(&priv->tx_lock, flags);
+	return saved & 0xffffU;
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_pon_gate);
+
+static unsigned int rtl_pointer(struct rtl_xram *priv, unsigned int reg)
+{
+	return readl(priv->ni + reg) & POINTER_MASK;
+}
+
+static void rtl_update(struct rtl_xram *priv, unsigned int reg, u32 mask, u32 value)
+{
+	writel((readl(priv->ni + reg) & ~mask) | value, priv->ni + reg);
+}
+
+static void rtl_mac_address(struct rtl_xram *priv)
+{
+	const u8 *mac = priv->netdev->dev_addr;
+
+	writel(get_unaligned_be32(mac), priv->ni + MAC_ADDR0);
+	rtl_update(priv, MAC_ADDR1, 0xff, mac[4]);
+	rtl_update(priv, PORT_STATIC + priv->port * PORT_STRIDE,
+		   GENMASK(31, 24), (u32)mac[5] << 24);
+}
+
+static void rtl_adjust_link(struct net_device *dev)
+{
+	struct rtl_lan *lan = netdev_priv(dev);
+	struct phy_device *phy = dev->phydev;
+
+	if (phy->link) {
+		/* Port4's SGMII PCS requires GMII even at 10/100 Mbps. */
+		rtl_update(lan->shared, PORT_STATIC + lan->port * PORT_STRIDE,
+			   GENMASK(3, 0),
+			   lan->port == 4 || phy->speed >= SPEED_1000 ? 0 : 1);
+		rtl_update(lan->shared, PORT_GLB + lan->port * PORT_STRIDE,
+			   BIT(0) | BIT(1), (phy->speed == SPEED_10 ? BIT(0) : 0) |
+			   (phy->duplex == DUPLEX_HALF ? BIT(1) : 0));
+		if (lan->port == 4 && lan->shared->sgmii_speed != phy->speed) {
+			int ret = phy_set_speed(lan->shared->sgmii, phy->speed);
+
+			if (ret) {
+				netdev_err(dev, "S3 speed %d failed: %d\n", phy->speed, ret);
+				phy_error(phy);
+				return;
+			}
+			lan->shared->sgmii_speed = phy->speed;
+		}
+	}
+	phy_print_status(dev->phydev);
+}
+
+static void rtl_rx_mode(struct net_device *dev)
+{
+	struct rtl_xram *priv = rtl_shared(dev);
+	bool accept_all = (dev->flags & (IFF_PROMISC | IFF_ALLMULTI)) ||
+			  !netdev_mc_empty(dev);
+
+	if (priv->qm_rx)
+		return;
+	/* Taurus's management filter uses mode 1 for promiscuous receive. */
+	rtl_update(priv, XRAM_CFG, RX_PROMISC, FIELD_PREP(RX_PROMISC, accept_all));
+}
+
+static int rtl_poll(struct napi_struct *napi, int budget)
+{
+	struct rtl_xram *priv = container_of(napi, struct rtl_xram, napi);
+	struct net_device *dev = priv->netdev;
+	int packets = 0;
+
+	if (priv->qm_rx) {
+		unsigned long flags;
+
+		packets = rtl_qm_rx_poll(&priv->qm, napi, budget);
+		/* Completion can deliver GRO packets; keep IRQs enabled for the stack. */
+		if (packets < budget && napi_complete_done(napi, packets)) {
+			spin_lock_irqsave(&priv->rx_lock, flags);
+			if (priv->rx_active)
+				rtl_update(priv, 0x6110, 0xff, 0xff);
+			spin_unlock_irqrestore(&priv->rx_lock, flags);
+		}
+		return packets;
+	}
+
+	while (packets < budget) {
+		unsigned int rd = rtl_pointer(priv, RX_READ);
+		unsigned int wr = rtl_pointer(priv, RX_WRITE);
+		unsigned int offset, next, size, copied;
+		struct sk_buff *skb;
+		u32 header, status;
+
+		if (rd == wr)
+			break;
+		header = readl(priv->xram + rd * 8 + 4);
+		if (header & XR_OWN)
+			break;
+		next = header & POINTER_MASK;
+		if (next >= RTL_XRAM_RX_END || next == rd) {
+			dev->stats.rx_errors++;
+			writel(wr, priv->ni + RX_READ);
+			break;
+		}
+		offset = rtl_xram_word_next(rd * 8 + 4, 0, RTL_XRAM_RX_END * 8);
+		status = readl(priv->xram + offset);
+		size = FIELD_GET(PKT_SIZE, status);
+		packets++;
+		if (!(status & PKT_VALID) || (status & PKT_ERRORS) ||
+		    size < ETH_HLEN + ETH_FCS_LEN || size > 1522) {
+			dev->stats.rx_errors++;
+			writel(next, priv->ni + RX_READ);
+			continue;
+		}
+		size -= ETH_FCS_LEN;
+		skb = napi_alloc_skb(napi, size);
+		if (!skb) {
+			dev->stats.rx_dropped++;
+			writel(next, priv->ni + RX_READ);
+			continue;
+		}
+		offset = rtl_xram_word_next(offset, 0, RTL_XRAM_RX_END * 8);
+		offset = rtl_xram_word_next(offset, 0, RTL_XRAM_RX_END * 8);
+		for (copied = 0; copied < size; copied += 4) {
+			__le32 word = cpu_to_le32(readl(priv->xram + offset));
+
+			memcpy(skb_put(skb, min(4U, size - copied)), &word,
+			       min(4U, size - copied));
+			offset = rtl_xram_word_next(offset, 0, RTL_XRAM_RX_END * 8);
+		}
+		writel(next, priv->ni + RX_READ);
+		skb->protocol = eth_type_trans(skb, dev);
+		dev->stats.rx_packets++;
+		dev->stats.rx_bytes += size;
+		napi_gro_receive(napi, skb);
+	}
+	if (packets < budget)
+		napi_complete_done(napi, packets);
+	return packets;
+}
+
+static enum hrtimer_restart rtl_timer(struct hrtimer *timer)
+{
+	struct rtl_xram *priv = container_of(timer, struct rtl_xram, timer);
+
+	if (!priv->qm_rx || READ_ONCE(priv->qm.refill.pending))
+		napi_schedule(&priv->napi);
+	spin_lock(&priv->tx_lock);
+	if (priv->dma_tx) {
+		struct rtl9617c_ni_endpoint *endpoint;
+
+		rtl_dma_tx_complete(&priv->dma, priv->netdev);
+		rcu_read_lock();
+		endpoint = rcu_dereference(priv->qm.pon);
+		if (endpoint && rtl_dma_tx_available(&priv->dma))
+			endpoint->wake(endpoint);
+		endpoint = rcu_dereference(priv->qm.fttr);
+		if (endpoint && rtl_dma_tx_available(&priv->dma))
+			endpoint->wake(endpoint);
+		rcu_read_unlock();
+		if (rtl_dma_tx_available(&priv->dma)) {
+			unsigned int port;
+
+			for (port = 0; port < ARRAY_SIZE(priv->ports); port++)
+				if (priv->ports[port] && netif_running(priv->ports[port]) &&
+				    netif_queue_stopped(priv->ports[port]))
+					netif_wake_queue(priv->ports[port]);
+		}
+	} else if (priv->tx_pending && rtl_pointer(priv, TX_READ) == rtl_pointer(priv, TX_WRITE)) {
+		priv->tx_pending = false;
+		priv->netdev->stats.tx_packets++;
+		priv->netdev->stats.tx_bytes += priv->tx_length;
+		netif_wake_queue(priv->netdev);
+	}
+	spin_unlock(&priv->tx_lock);
+	hrtimer_forward_now(timer, ms_to_ktime(1));
+	return HRTIMER_RESTART;
+}
+
+static irqreturn_t rtl_rx_irq(int irq, void *data)
+{
+	struct rtl_xram *priv = data;
+
+	rtl_update(priv, 0x6110, 0xff, 0);
+	napi_schedule_irqoff(&priv->napi);
+	return IRQ_HANDLED;
+}
+
+static netdev_tx_t rtl_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+	struct rtl_lan *lan = netdev_priv(dev);
+	struct rtl_xram *priv = lan->shared;
+	unsigned int pointer, offset, wire, i;
+	unsigned long flags;
+	u32 crc;
+
+	if (skb->len < ETH_HLEN || skb->len > 1522) {
+		dev->stats.tx_dropped++;
+		dev_kfree_skb_any(skb);
+		return NETDEV_TX_OK;
+	}
+	spin_lock_irqsave(&priv->tx_lock, flags);
+	if (priv->dma_tx) {
+		const struct rtl9617c_ni_frame frame = {
+			.header_high = BIT(13),
+			.header_low = (16 << 9) | (lan->port << 3) | BIT(29),
+		};
+		netdev_tx_t result = rtl_dma_tx_frame(&priv->dma, skb, dev, &frame);
+
+		spin_unlock_irqrestore(&priv->tx_lock, flags);
+		return result;
+	}
+	pointer = rtl_pointer(priv, TX_WRITE);
+	if (priv->tx_pending || rtl_pointer(priv, TX_READ) != pointer) {
+		netif_stop_queue(dev);
+		spin_unlock_irqrestore(&priv->tx_lock, flags);
+		return NETDEV_TX_BUSY;
+	}
+	wire = rtl_xram_wire_length(skb->len);
+	memset(priv->tx_buffer, 0, ALIGN(8 + wire, 4));
+	skb_copy_bits(skb, 0, priv->tx_buffer + 8, skb->len);
+	crc = crc32_le(~0, priv->tx_buffer + 8, wire - 4) ^ ~0;
+	put_unaligned_le32(crc, priv->tx_buffer + 8 + wire - 4);
+	offset = pointer * 8 + 4;
+	writel(rtl_xram_tx_header(rtl_xram_tx_next(pointer, wire), wire),
+	       priv->xram + offset);
+	offset = rtl_xram_word_next(offset, RTL_XRAM_TX_START * 8, RTL_XRAM_TX_END * 8);
+	for (i = 0; i < wire + 8; i += 4) {
+		writel(get_unaligned_le32(priv->tx_buffer + i), priv->xram + offset);
+		offset = rtl_xram_word_next(offset, RTL_XRAM_TX_START * 8, RTL_XRAM_TX_END * 8);
+	}
+	priv->tx_pending = true;
+	priv->tx_length = skb->len;
+	netif_stop_queue(dev);
+	wmb();
+	writel(rtl_xram_tx_next(pointer, wire), priv->ni + TX_WRITE);
+	spin_unlock_irqrestore(&priv->tx_lock, flags);
+	dev_consume_skb_any(skb);
+	return NETDEV_TX_OK;
+}
+
+static int rtl_engine_start(struct rtl_xram *priv)
+{
+	struct net_device *dev = priv->netdev;
+	unsigned int port;
+	u32 config;
+	int ret;
+
+	if (priv->dma_tx) {
+		/* The bootloader's XRAM path leaves the normal LAN scheduler off. */
+		/* Original aal_l2_qm_init: EQ1 has4K64-byte pages, with29 pages
+		 * reserved per port so one full frame survives shared-pool pressure. */
+		writel(BIT(31) | (4U << 16) | (29U << 20), priv->ni + 0x2208);
+		rtl_update(priv, 0x2218, GENMASK(14, 0), 29);
+		writel(0x08008021, priv->ni + 0x2210);
+		/* Port15 uses scheduler instance14. Leaving it stopped
+		 * holds VOQ120..127 buffers until every LAN/PON data path runs out. */
+		rtl_update(priv, 0x2304 + 12 * 14, 0xff, 0xff);
+		rtl_update(priv, 0x2300, BIT(31) | BIT(15), BIT(31) | BIT(15));
+		for (port = 0; port < ARRAY_SIZE(priv->ports); port++)
+			if (priv->ports[port]) {
+				rtl_update(priv, 0x2300, BIT(31) | BIT(port), BIT(31) | BIT(port));
+				rtl_update(priv, 0x2304 + 12 * port, 0xff, 0xff);
+			}
+		if (priv->fttr) {
+			rtl_update(priv, 0x2304 + 12 * 6, 0xff, 0xff);
+			rtl_update(priv, 0x2300, BIT(6), priv->p6.configured ? BIT(6) : 0);
+		}
+		ret = rtl_dma_tx_start(&priv->dma);
+		if (ret) {
+			rtl_dma_tx_stop(&priv->dma);
+			return ret;
+		}
+	}
+	if (priv->qm_rx) {
+		ret = rtl_qm_rx_start(&priv->qm, priv->port);
+		if (ret) {
+			/* Start can fail after publishing buffers or enabling only part
+			 * of QM. Close those producers before leaving the engine unused;
+			 * stop_error/reset_error retain any unconfirmed hardware ownership. */
+			rtl_qm_rx_stop(&priv->qm);
+			if (priv->dma_tx) rtl_dma_tx_stop(&priv->dma);
+			return ret;
+		}
+		for (port = 0; port < ARRAY_SIZE(priv->ports); port++)
+			if (priv->ports[port])
+				rtl_update(priv, 0xa5f8 + PORT_STRIDE * port,
+					   BIT(28) | GENMASK(21, 16) | BIT(31), BIT(28) | (16 << 16));
+	}
+
+	rtl_update(priv, GLB_STATIC, PORT_TO_CPU, priv->dma_tx ? 0xf : priv->port);
+	rtl_mac_address(priv);
+	writel((RTL_XRAM_RX_END - 1) << 16, priv->ni + RX_ADDR);
+	writel((RTL_XRAM_TX_END - 1) << 16 | RTL_XRAM_TX_START, priv->ni + TX_ADDR);
+	config = readl(priv->ni + XRAM_CFG) & ~RX_PROMISC;
+	writel(config | CPU_DISABLE, priv->ni + XRAM_CFG);
+	udelay(100);
+	writel(priv->qm_rx ? config | CPU_DISABLE : config & ~CPU_DISABLE,
+	       priv->ni + XRAM_CFG);
+	rtl_rx_mode(dev);
+	priv->tx_pending = false;
+	napi_enable(&priv->napi);
+	if (priv->qm_rx) {
+		unsigned long flags;
+
+		spin_lock_irqsave(&priv->rx_lock, flags);
+		priv->rx_active = true;
+		rtl_update(priv, 0x6110, 0xff, 0xff);
+		spin_unlock_irqrestore(&priv->rx_lock, flags);
+	}
+	hrtimer_start(&priv->timer, ms_to_ktime(1), HRTIMER_MODE_REL);
+	return 0;
+}
+
+static void rtl_engine_stop(struct rtl_xram *priv)
+{
+	unsigned long flags;
+
+	hrtimer_cancel(&priv->timer);
+	if (priv->qm_rx) {
+		spin_lock_irqsave(&priv->rx_lock, flags);
+		priv->rx_active = false;
+		rtl_update(priv, 0x6110, 0xff, 0);
+		spin_unlock_irqrestore(&priv->rx_lock, flags);
+		synchronize_irq(priv->rx_irq);
+	}
+	napi_disable(&priv->napi);
+	if (priv->qm_rx) {
+		/* Completion releases NAPI ownership before the final rearm check.
+		 * Wait for the BH-disabled poll tail before stopping or reopening QM. */
+		synchronize_net();
+		rtl_qm_rx_stop(&priv->qm);
+	}
+	if (priv->dma_tx)
+		rtl_dma_tx_stop(&priv->dma);
+	rtl_update(priv, XRAM_CFG, CPU_DISABLE, CPU_DISABLE);
+	return;
+}
+
+static int rtl_engine_get(struct rtl_xram *priv)
+{
+	int ret;
+
+	/* Both netdev open/stop paths are serialized by RTNL. */
+	if (priv->engine_users) {
+		priv->engine_users++;
+		return 0;
+	}
+	/* QM ingress and schedulers only cover ports published before the first start. */
+	wait_for_completion(&priv->lan4_ready);
+	ret = rtl_engine_start(priv);
+	if (!ret)
+		priv->engine_users = 1;
+	return ret;
+}
+
+static void rtl_engine_put(struct rtl_xram *priv)
+{
+	if (!--priv->engine_users)
+		rtl_engine_stop(priv);
+}
+
+static int rtl_open(struct net_device *dev)
+{
+	struct rtl_lan *lan = netdev_priv(dev);
+	struct rtl_xram *priv = lan->shared;
+	int ret = rtl_engine_get(priv);
+
+	if (ret)
+		return ret;
+	/* ndo_stop errors cannot hold the interface down. Finish any failed
+	 * withdrawal before opening the MAC onto its previous hardware flows. */
+	ret = rtl_fe_flush_port(priv->fe, dev);
+	if (ret) {
+		rtl_engine_put(priv);
+		return ret;
+	}
+	/* Stock aal_set_active_port releases this port's interface and RX/TX resets. */
+	rtl_update(priv, 0xa008, BIT(lan->port) | BIT(lan->port + 6) | BIT(lan->port + 12), 0);
+	rtl_update(priv, PORT_STATIC + lan->port * PORT_STRIDE,
+		   GENMASK(31, 24), (u32)dev->dev_addr[5] << 24);
+	rtl_update(priv, PORT_RX + lan->port * PORT_STRIDE, BIT(0), BIT(0));
+	rtl_update(priv, PORT_TX + lan->port * PORT_STRIDE, BIT(0), BIT(0));
+	phy_start(dev->phydev);
+	netif_start_queue(dev);
+	return 0;
+}
+
+static int rtl_stop(struct net_device *dev)
+{
+	struct rtl_lan *lan = netdev_priv(dev);
+	struct rtl_xram *priv = lan->shared;
+	unsigned long flags;
+	int ret;
+
+	netif_stop_queue(dev);
+	phy_stop(dev->phydev);
+	rtl_update(priv, PORT_RX + lan->port * PORT_STRIDE, BIT(0), 0);
+	rtl_update(priv, PORT_TX + lan->port * PORT_STRIDE, BIT(0), 0);
+	ret = rtl_fe_flush_port(priv->fe, dev);
+	if (priv->dma_tx) {
+		spin_lock_irqsave(&priv->tx_lock, flags);
+		rtl_dma_tx_forget(&priv->dma, dev);
+		spin_unlock_irqrestore(&priv->tx_lock, flags);
+	}
+	rtl_engine_put(priv);
+	return ret;
+}
+
+int rtl9617c_ni_pon_attach(struct device *dev, struct rtl9617c_ni_endpoint *endpoint)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+
+	if (!priv->qm_rx || !priv->dma_tx)
+		return -EOPNOTSUPP;
+	rcu_assign_pointer(priv->qm.pon, endpoint);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_pon_attach);
+
+void rtl9617c_ni_pon_detach(struct device *dev)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+
+	rcu_assign_pointer(priv->qm.pon, NULL);
+	synchronize_net();
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_pon_detach);
+
+int rtl9617c_ni_open(struct device *dev)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+
+	return rtl_engine_get(priv);
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_open);
+
+void rtl9617c_ni_close(struct device *dev, struct net_device *owner)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	unsigned long flags;
+
+	rtl_fe_flush_port(priv->fe,owner);
+	spin_lock_irqsave(&priv->tx_lock, flags);
+	rtl_dma_tx_forget(&priv->dma, owner);
+	spin_unlock_irqrestore(&priv->tx_lock, flags);
+	rtl_engine_put(priv);
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_close);
+
+static void rtl_fttr_link_work(struct work_struct *work)
+{
+	struct rtl_fttr_port *port = container_of(to_delayed_work(work),
+						struct rtl_fttr_port, link_work);
+	struct net_device *dev = port->endpoint.netdev;
+
+	if (rtnl_trylock()) {
+		if (!port->shared->removing && rtl_fttr_p6_link(&port->shared->p6))
+			netif_carrier_on(dev);
+		else
+			netif_carrier_off(dev);
+		rtl_fttr_mcast_link(port->shared->fttr_mc, netif_carrier_ok(dev));
+		rtnl_unlock();
+	}
+	if (!READ_ONCE(port->shared->removing) && netif_running(dev))
+		schedule_delayed_work(&port->link_work, HZ);
+}
+
+static void rtl_fttr_tx_gate(struct rtl_xram *priv, bool active)
+{
+	unsigned long flags;
+
+	/* Serialize with both DMA submission and the timer's endpoint wake.
+	 * Stop the netdev after closing this gate, without holding tx_lock
+	 * across its own TX queue lock.
+	 */
+	spin_lock_irqsave(&priv->tx_lock, flags);
+	WRITE_ONCE(priv->fttr_tx_active, active);
+	if (!active) {
+		smp_store_release(&priv->fttr_forwarding, false);
+		rtl9617c_fttr_generation_set(false);
+	}
+	spin_unlock_irqrestore(&priv->tx_lock, flags);
+	if (!active && priv->fttr)
+		netif_tx_disable(priv->fttr);
+	if (!active)
+		rtl_fttr_mcast_gate(priv->fttr_mc, false);
+}
+
+static int rtl_fttr_open(struct net_device *dev)
+{
+	struct rtl_fttr_port *port = netdev_priv(dev);
+	int ret;
+
+	if (port->shared->removing)
+		return -ENODEV;
+	if (port->shared->fttr_loading)
+		return -EBUSY;
+	if (!port->shared->p6.configured)
+		return -ENETDOWN;
+	WRITE_ONCE(port->shared->qm.fttr_epoch, port->shared->qm.fttr_epoch + 1);
+	ret = rtl_engine_get(port->shared);
+	if (ret)
+		return ret;
+	ret = rtl_fe_fttr_open(port->shared->fe);
+	if (ret) {
+		rtl_engine_put(port->shared);
+		return ret;
+	}
+	rtl_fttr_tx_gate(port->shared, true);
+	netif_start_queue(dev);
+	schedule_delayed_work(&port->link_work, 0);
+	return 0;
+}
+
+static int rtl_fttr_stop(struct net_device *dev)
+{
+	struct rtl_fttr_port *port = netdev_priv(dev);
+	int ret, cleanup;
+
+	WRITE_ONCE(port->shared->qm.fttr_epoch, port->shared->qm.fttr_epoch + 1);
+	rtl_fttr_tx_gate(port->shared, false);
+	cancel_delayed_work_sync(&port->link_work);
+	rtl_fttr_rx_purge(port->shared);
+	netif_carrier_off(dev);
+	ret = rtl_fe_fttr_set(port->shared->fe, false);
+	cleanup = rtl_fe_fttr_close(port->shared->fe);
+	if (!ret)
+		ret = cleanup;
+	cleanup = rtl9617c_fttr_tx_drain();
+	if (!ret)
+		ret = cleanup;
+	rtl9617c_ni_close(port->shared->p6.dev, dev);
+	return ret;
+}
+
+static netdev_tx_t rtl_fttr_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+	struct rtl_fttr_port *port = netdev_priv(dev);
+	const struct rtl9617c_ni_frame frame = {
+		/* Original virtual CPU TX sets Header A DEEPQ (bit62). P6 uses
+		 * QM port14/VOQ112..119 for CPU submissions as well as FE output.
+		 */
+		.header_high = BIT(13) | BIT(30),
+		.header_low = (16 << 9) | (6 << 3) | BIT(29),
+	};
+
+	rcu_read_lock();
+	if (rtl_fttr_mcast_drop(READ_ONCE(port->shared->fttr_mc), skb)) {
+		rcu_read_unlock();
+		dev->stats.tx_dropped++;
+		dev_kfree_skb_any(skb);
+		return NETDEV_TX_OK;
+	}
+	rcu_read_unlock();
+	return rtl9617c_ni_transmit(port->shared->p6.dev, dev, skb, &frame);
+}
+
+/* Native MiniOLT management is an untagged Ethernet envelope. A service
+ * carrying that ethertype still has its outer GEM VLAN and cannot bypass the
+ * forwarding gate. The controller supplies the actual MiniOLT ethertype.
+ */
+static bool rtl_fttr_management(struct rtl_xram *priv, const struct sk_buff *skb)
+{
+	u8 header[ETH_HLEN];
+	const u8 *data;
+	u16 type = READ_ONCE(priv->fttr_omci_type);
+
+	if (!type || skb_vlan_tag_present(skb))
+		return false;
+	data = skb_header_pointer(skb, 0, sizeof(header), header);
+	return data && get_unaligned_be16(data + 12) == type;
+}
+
+static void rtl_fttr_receive(struct rtl9617c_ni_endpoint *endpoint, struct napi_struct *napi,
+			     struct sk_buff *skb, unsigned int source)
+{
+	struct rtl_fttr_port *port = container_of(endpoint, struct rtl_fttr_port, endpoint);
+	struct net_device *dev = endpoint->netdev;
+
+	if (!netif_running(dev) || !READ_ONCE(port->shared->p6.configured) || skb->len < ETH_HLEN ||
+	    (!smp_load_acquire(&port->shared->fttr_forwarding) && !rtl_fttr_management(port->shared, skb))) {
+		dev->stats.rx_dropped++;
+		dev_kfree_skb_any(skb);
+		return;
+	}
+	if (!rtl_fttr_management(port->shared, skb) && !rtl9617c_fttr_stamp(skb)) {
+		dev->stats.rx_dropped++;
+		dev_kfree_skb_any(skb);
+		return;
+	}
+	dev->stats.rx_packets++;
+	dev->stats.rx_bytes += skb->len;
+	/* Original EXT_SWITCH_EN survives bridge/routing and skb copies. */
+	skb->rtl9617c_fttr_ingress = 1;
+	if (rtl_fttr_mcast_receive(READ_ONCE(port->shared->fttr_mc), napi, skb))
+		return;
+	skb->protocol = eth_type_trans(skb, dev);
+	napi_gro_receive(napi, skb);
+}
+
+static void rtl_fttr_wake(struct rtl9617c_ni_endpoint *endpoint)
+{
+	struct rtl_fttr_port *port = container_of(endpoint, struct rtl_fttr_port, endpoint);
+
+	if (READ_ONCE(port->shared->fttr_tx_active) && netif_running(endpoint->netdev) &&
+	    netif_queue_stopped(endpoint->netdev))
+		netif_wake_queue(endpoint->netdev);
+}
+
+static int rtl_fttr_setup_tc(struct net_device *dev, enum tc_setup_type type, void *data)
+{
+	struct rtl_fttr_port *port = netdev_priv(dev);
+
+	return rtl_fe_setup_tc(port->shared->fe, dev, type, data);
+}
+
+static const struct net_device_ops rtl_fttr_netdev_ops = {
+	.ndo_setup_tc = rtl_fttr_setup_tc,
+	.ndo_open = rtl_fttr_open,
+	.ndo_stop = rtl_fttr_stop,
+	.ndo_start_xmit = rtl_fttr_xmit,
+	.ndo_set_mac_address = eth_mac_addr,
+	.ndo_validate_addr = eth_validate_addr,
+};
+
+static int rtl_register_fttr(struct rtl_xram *priv)
+{
+	struct net_device *dev;
+	struct rtl_fttr_port *port;
+	int ret;
+
+	if (!priv->p6.qx)
+		return 0;
+	dev = alloc_etherdev(sizeof(*port));
+	if (!dev)
+		return -ENOMEM;
+	port = netdev_priv(dev);
+	port->shared = priv;
+	/* Original ASIC/FPGA OMCI default, also available for manual bring-up. */
+	priv->fttr_omci_type = 0x8888;
+	port->endpoint = (struct rtl9617c_ni_endpoint) {
+		.netdev = dev, .receive = rtl_fttr_receive, .wake = rtl_fttr_wake,
+	};
+	INIT_DELAYED_WORK(&port->link_work, rtl_fttr_link_work);
+	SET_NETDEV_DEV(dev, priv->p6.dev);
+	strscpy(dev->name, "fttr0", sizeof(dev->name));
+	dev->netdev_ops = &rtl_fttr_netdev_ops;
+	dev->rtl9617c_fttr_egress = 1;
+	dev->rtl9617c_fttr_omci = priv->fttr_omci_type;
+	dev->mtu = RTL_FTTR_FRAME_BYTES - ETH_HLEN;
+	dev->max_mtu = dev->mtu;
+	eth_hw_addr_set(dev, priv->netdev->dev_addr);
+	netif_carrier_off(dev);
+	ret = rtl_fe_add_fttr_port(priv->fe, dev);
+	if (ret) {
+		free_netdev(dev);
+		return ret;
+	}
+	ret = register_netdevice(dev);
+	if (ret) {
+		rtl_fe_remove_port(priv->fe, dev);
+		free_netdev(dev);
+		return ret;
+	}
+	priv->fttr = dev;
+	priv->fttr_mc = rtl_fttr_mcast_create(dev);
+	if (IS_ERR(priv->fttr_mc)) {
+		ret = PTR_ERR(priv->fttr_mc);
+		priv->fttr_mc = NULL;
+		priv->fttr = NULL;
+		rtl_fe_remove_port(priv->fe, dev);
+		dev->needs_free_netdev = true;
+		unregister_netdevice(dev);
+		return ret;
+	}
+	rtl_fe_set_fttr_mcast(priv->fe, priv->fttr_mc);
+	rcu_assign_pointer(priv->qm.fttr, &port->endpoint);
+	return 0;
+}
+
+static void rtl_unregister_fttr(struct rtl_xram *priv)
+{
+	struct net_device *mc;
+	struct rtl_fttr_port *port;
+
+	if (!priv->fttr)
+		return;
+	port = netdev_priv(priv->fttr);
+	rtnl_lock();
+	cancel_delayed_work_sync(&port->link_work);
+	rtl_fttr_tx_gate(priv, false);
+	rcu_assign_pointer(priv->qm.fttr, NULL);
+	/* Unregister must retire management skbs too: no endpoint will consume
+	 * them, and a shared engine may retain GRO without another P6 poll.
+	 */
+	WRITE_ONCE(priv->fttr_omci_type, 0);
+	rtl_fttr_rx_purge(priv);
+	mc = priv->fttr_mc;
+	rtl_fe_set_fttr_mcast(priv->fe, NULL);
+	WRITE_ONCE(priv->fttr_mc, NULL);
+	rtnl_unlock();
+	rtl_fttr_mcast_destroy(mc);
+	unregister_netdev(priv->fttr);
+	rtl_fe_remove_port(priv->fe, priv->fttr);
+	rcu_assign_pointer(priv->qm.fttr, NULL);
+	synchronize_net();
+	free_netdev(priv->fttr);
+	priv->fttr = NULL;
+}
+
+netdev_tx_t rtl9617c_ni_transmit(struct device *dev, struct net_device *owner,
+			       struct sk_buff *skb, const struct rtl9617c_ni_frame *frame)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	unsigned long flags;
+	netdev_tx_t result;
+
+	spin_lock_irqsave(&priv->tx_lock, flags);
+	if (rtl9617c_fttr_stale(skb)) {
+		owner->stats.tx_dropped++;
+		dev_kfree_skb_any(skb);
+		result = NETDEV_TX_OK;
+	} else if (owner == priv->fttr && !priv->fttr_tx_active) {
+		netif_stop_queue(owner);
+		result = NETDEV_TX_BUSY;
+	} else if (owner == priv->fttr && !priv->fttr_forwarding && !rtl_fttr_management(priv, skb)) {
+		/* Consume rejected business packets: returning BUSY would retain
+		 * them in qdisc for transmission after a different ONU owns the GEM.
+		 */
+		owner->stats.tx_dropped++;
+		dev_kfree_skb_any(skb);
+		result = NETDEV_TX_OK;
+	} else {
+		result = rtl_dma_tx_frame(&priv->dma, skb, owner, frame);
+	}
+	spin_unlock_irqrestore(&priv->tx_lock, flags);
+	return result;
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_transmit);
+
+int rtl9617c_ni_wifi_lookup(struct device *dev, struct sk_buff *skb, unsigned int id)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	unsigned long flags;
+	int ret;
+
+	if (!id || id > RTL_WIFI_ID_MAX) return -EINVAL;
+	rcu_read_lock();
+	struct rtl9617c_ni_wifi_endpoint *endpoint = rcu_dereference(priv->qm.wifi[id]);
+	if (!endpoint || READ_ONCE(endpoint->closing)) {
+		rcu_read_unlock(); return -ENODEV;
+	}
+	spin_lock_irqsave(&priv->tx_lock, flags);
+	ret = rtl_dma_tx_wifi(&priv->dma, priv->netdev, skb, id);
+	spin_unlock_irqrestore(&priv->tx_lock, flags);
+	rcu_read_unlock();
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_wifi_lookup);
+
+int rtl9617c_ni_wifi_attach(struct device *dev, struct rtl9617c_ni_wifi_endpoint *endpoint)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	unsigned int id;
+	int ret;
+
+	ASSERT_RTNL();
+	if (!priv->dma_tx || !priv->qm_rx || !priv->fe) return -EOPNOTSUPP;
+	for (id = 1; id <= RTL_WIFI_ID_MAX; id++)
+		if (!rcu_access_pointer(priv->qm.wifi[id])) break;
+	if (id > RTL_WIFI_ID_MAX) return -ENOSPC;
+	ret = rtl_engine_get(priv);
+	if (ret) return ret;
+	ret = rtl_fe_add_wifi_port(priv->fe, endpoint->netdev, id);
+	if (ret) { rtl_engine_put(priv); return ret; }
+	dev_hold(endpoint->netdev);
+	WRITE_ONCE(endpoint->closing, false);
+	rcu_assign_pointer(priv->qm.wifi[id], endpoint);
+	return id;
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_wifi_attach);
+
+int rtl9617c_ni_wifi_id(struct device *dev, struct net_device *netdev)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	unsigned int id;
+	int ret = -ENODEV;
+	rcu_read_lock();
+	for (id = 1; id <= RTL_WIFI_ID_MAX; id++) {
+		struct rtl9617c_ni_wifi_endpoint *endpoint = rcu_dereference(priv->qm.wifi[id]);
+		if (endpoint && endpoint->netdev == netdev && !READ_ONCE(endpoint->closing)) { ret = id; break; }
+	}
+	rcu_read_unlock();
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_wifi_id);
+
+int rtl9617c_ni_wifi_retire(struct device *dev, unsigned int pool)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	return rtl_qm_wifi_retire(&priv->qm, pool);
+}
+
+int rtl9617c_ni_wifi_detach(struct device *dev, unsigned int id)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	struct rtl9617c_ni_wifi_endpoint *endpoint;
+	u32 status;
+	unsigned long flags;
+	int ret;
+
+	ASSERT_RTNL();
+	if (!id || id > RTL_WIFI_ID_MAX) return -EINVAL;
+	endpoint = rcu_access_pointer(priv->qm.wifi[id]);
+	if (!endpoint) return 0;
+	WRITE_ONCE(endpoint->closing, true);
+	/* Join ingress submitters and RX callbacks before withdrawal can fail.
+	 * A retained endpoint must not become usable just because IFF_UP returns. */
+	synchronize_net();
+	/* The caller has removed its ingress hook. Withdraw rules, drain copied
+	 * NI submissions and old EPPs, then release the ID and netdev reference. */
+	/* Keep the flow-block owner across NETDEV_DOWN/UP; UNREGISTER retires it. */
+	ret = rtl_fe_flush_port(priv->fe, endpoint->netdev);
+	if (ret && !priv->removing) return ret;
+	spin_lock_irqsave(&priv->tx_lock, flags);
+	ret = readl_poll_timeout_atomic(priv->dma.registers + 0x100 + priv->dma.vp * 0xa0 + 0x1c,
+		status, (status & 63) == priv->dma.write, 1, 100000);
+	spin_unlock_irqrestore(&priv->tx_lock, flags);
+	/* A busy shared queue retains this identity. Removing the NI supplier
+	 * releases all identities together; none can be reassigned afterward. */
+	if (ret && !priv->removing) return ret;
+	usleep_range(1000, 2000);
+	napi_disable(&priv->napi);
+	local_bh_disable();
+	rtl_qm_rx_poll(&priv->qm, &priv->napi, 1024);
+	/* The manual drain has no NAPI completion to flush held VIF packets. */
+	napi_gro_flush(&priv->napi, false);
+	netif_receive_skb_list(&priv->napi.gro.rx_list);
+	priv->napi.gro.rx_count = 0;
+	local_bh_enable();
+	rcu_assign_pointer(priv->qm.wifi[id], NULL);
+	napi_enable(&priv->napi);
+	/* An IRQ during napi_disable can mask RX without scheduling a poll. */
+	napi_schedule(&priv->napi);
+	synchronize_net();
+	dev_put(endpoint->netdev);
+	rtl_engine_put(priv);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_wifi_detach);
+
+bool rtl9617c_ni_wifi_enabled(struct device *dev)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	return rtl_fe_enabled(priv->fe);
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_wifi_enabled);
+
+int rtl9617c_ni_wifi_peer_route(struct device *dev, struct net_device *netdev,
+	const u8 *address, unsigned int destination)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	return rtl_fe_wifi_peer_route(priv->fe, netdev, address, destination);
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_wifi_peer_route);
+
+int rtl9617c_ni_wifi_mcast_table(struct device *dev,struct net_device *netdev,
+ unsigned int destination,struct rtl_mc_pe_table *table,bool bind)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	return rtl_fe_wifi_mcast_table(priv->fe, netdev, destination, table, bind);
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_wifi_mcast_table);
+
+void rtl9617c_ni_wifi_mcast_detach(struct device *dev)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	rtl_fe_wifi_mcast_detach(priv->fe);
+}
+
+int rtl9617c_ni_wifi_mcast_policy(struct device *dev,struct net_device *netdev,const u8 *address,
+ unsigned int destination,unsigned int macid,const struct rtl9617c_wifi_policy *policy,u64 generation)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	return rtl_fe_wifi_mcast_policy(priv->fe,netdev,address,destination,macid,policy,generation);
+}
+
+int rtl9617c_ni_oam_configure(struct device *dev)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	static const unsigned int index[] = {15, 0x8f, 0x4f, 0xcf};
+	u32 value = 12;
+	unsigned int i;
+	int ret;
+
+	/* aal_port: NI7 ninth queue (LDPID15) enters the OAM physical port12. */
+	for (i = 0; i < ARRAY_SIZE(index); i++) {
+		ret = rtl9617c_ni_table(priv, rtl_mib_read, rtl_mib_write, rtl_mib_indirect,
+			0x1654, index[i], NULL, &value, 1);
+		if (ret)
+			return ret;
+	}
+	writel(0xff | (6 << 16), priv->ni + 0x2304 + 12 * 12);
+	rtl_update(priv, 0x2300, BIT(12), BIT(12));
+	return 0;
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_oam_configure);
+
+static int rtl_setup_tc(struct net_device *netdev,enum tc_setup_type type,void *data)
+{
+ struct rtl_xram *priv=rtl_shared(netdev);
+ return rtl_fe_setup_tc(priv->fe,netdev,type,data);
+}
+static const struct net_device_ops rtl_netdev_ops = {
+ .ndo_setup_tc = rtl_setup_tc,
+	.ndo_open = rtl_open,
+	.ndo_stop = rtl_stop,
+	.ndo_start_xmit = rtl_xmit,
+	.ndo_set_rx_mode = rtl_rx_mode,
+	.ndo_set_mac_address = eth_mac_addr,
+	.ndo_validate_addr = eth_validate_addr,
+	.ndo_eth_ioctl = phy_do_ioctl_running,
+};
+
+static const struct ethtool_ops rtl_ethtool_ops = {
+	.get_link = ethtool_op_get_link,
+	.get_link_ksettings = phy_ethtool_get_link_ksettings,
+	.set_link_ksettings = phy_ethtool_set_link_ksettings,
+	.nway_reset = phy_ethtool_nway_reset,
+};
+
+static int rtl_phy_led_output(struct tyfza1_led *led, unsigned int value)
+{
+	struct rtl_xram *priv = container_of(led, struct rtl_xram, phy_led);
+	/* Original LED0: 0=off, 1=on, 2=PHY link/activity (LCR7 bits0/4). */
+	return phy_modify_mmd(priv->ports[4]->phydev, MDIO_MMD_VEND2,
+			      0xd044, 0x11, value == 2 ? 0x10 : value);
+}
+
+static void rtl_unregister_lan(struct rtl_xram *priv, unsigned int port)
+{
+	struct net_device *dev = priv->ports[port];
+	unsigned long flags;
+
+	if (!dev)
+		return;
+	if (port == 4 && priv->phy_led_registered) {
+		tyfza1_led_unregister(&priv->phy_led);
+		priv->phy_led_registered = false;
+	}
+	spin_lock_irqsave(&priv->tx_lock, flags);
+	priv->ports[port] = NULL;
+	spin_unlock_irqrestore(&priv->tx_lock, flags);
+	rcu_assign_pointer(priv->qm.lan[port], NULL);
+	if (priv->registered_ports & BIT(port))
+		unregister_netdev(dev);
+	rtl_fe_remove_port(priv->fe, dev);
+	synchronize_net();
+	if (dev->phydev)
+		phy_disconnect(dev->phydev);
+	if (dev != priv->netdev)
+		free_netdev(dev);
+	priv->registered_ports &= ~BIT(port);
+}
+
+static void rtl_sgmii_power_off(void *data)
+{
+	phy_power_off(data);
+}
+
+static unsigned int rtl_lan_number(unsigned int port)
+{
+	/* Enclosure LAN1 is NI3 on 4GE and NI4 on the 2.5G board. */
+	return port == 4 ? 1 : 4 - port;
+}
+
+static int rtl_register_lan(struct rtl_xram *priv, struct device *parent,
+			    unsigned int port, struct device_node *phy)
+{
+	struct phy_device *phydev;
+	struct net_device *dev = NULL;
+	struct rtl_lan *lan;
+	bool sgmii_powered = false, registration_locked = false;
+	u8 mac[ETH_ALEN];
+	int ret;
+
+	if (port == 4) {
+		priv->sgmii = devm_phy_get(parent, "sgmii");
+		if (IS_ERR(priv->sgmii)) {
+			ret = PTR_ERR(priv->sgmii);
+			goto put_phy;
+		}
+		ret = phy_power_on(priv->sgmii);
+		if (ret)
+			goto put_phy;
+		ret = devm_add_action_or_reset(parent, rtl_sgmii_power_off, priv->sgmii);
+		if (ret)
+			goto put_phy;
+		sgmii_powered = true;
+	}
+	dev = port == priv->port ? priv->netdev : alloc_etherdev(sizeof(*lan));
+	if (!dev) {
+		ret = -ENOMEM;
+		goto put_phy;
+	}
+	priv->ports[port] = dev;
+	SET_NETDEV_DEV(dev, parent);
+	snprintf(dev->name, sizeof(dev->name), "lan%u", rtl_lan_number(port));
+	lan = netdev_priv(dev);
+	lan->shared = priv;
+	lan->port = port;
+	dev->netdev_ops = &rtl_netdev_ops;
+	dev->ethtool_ops = &rtl_ethtool_ops;
+	dev->max_mtu = ETH_DATA_LEN;
+	ether_addr_copy(mac, priv->netdev->dev_addr);
+	mac[5] += port - priv->port;
+	eth_hw_addr_set(dev, mac);
+	phydev = of_phy_find_device(phy);
+	if (!phydev) {
+		ret = -ENODEV;
+		goto put_phy;
+	}
+	ret = phy_connect_direct(dev, phydev, rtl_adjust_link,
+		port == 4 ? PHY_INTERFACE_MODE_SGMII : PHY_INTERFACE_MODE_GMII);
+	put_device(&phydev->mdio.dev);
+	if (ret)
+		goto put_phy;
+	ret = rtl_fe_add_port(priv->fe, dev, port, port, 0);
+	if (ret)
+		goto put_phy;
+	rcu_assign_pointer(priv->qm.lan[port], dev);
+	/* Publish NI4 (2.5G LAN1) before taking RTNL for registration: an engine start
+	 * waiting on lan4_ready under RTNL must not block this work. */
+	if (port == 4) {
+		complete_all(&priv->lan4_ready);
+		rtnl_lock();
+		registration_locked = true;
+	}
+	/* Synchronous ports are registered under rtl_register_lans()' RTNL. */
+	ret = register_netdevice(dev);
+	if (ret)
+		goto put_phy;
+	WRITE_ONCE(priv->registered_ports, priv->registered_ports | BIT(port));
+	if (port == 4) {
+		priv->phy_led.output = rtl_phy_led_output;
+		priv->phy_led.requested = 2;
+		priv->phy_led.cdev.name = "LED_8221B_P4_0";
+		priv->phy_led.cdev.max_brightness = 2;
+		ret = tyfza1_led_register(parent, &priv->phy_led, NULL);
+		if (ret)
+			dev_warn(parent, "LAN1 2.5G LED initialization failed: %d\n", ret);
+		else
+			priv->phy_led_registered = true;
+	}
+	dev_info(parent, "%s: LAN port %u %s, PHY %08x, MAC %pM\n",
+		 dev->name, port, priv->qm_rx ? "native NI/DMA" : "management XRAM",
+		 dev->phydev->phy_id, dev->dev_addr);
+	of_node_put(phy);
+	if (registration_locked)
+		rtnl_unlock();
+	return 0;
+
+put_phy:
+	of_node_put(phy);
+	if (dev)
+		rtl_unregister_lan(priv, port);
+	if (sgmii_powered)
+		devm_release_action(parent, rtl_sgmii_power_off, priv->sgmii);
+	if (registration_locked)
+		rtnl_unlock();
+	return ret;
+}
+
+static void rtl_lan4_work(struct work_struct *work)
+{
+	struct rtl_xram *priv = container_of(work, struct rtl_xram, lan4_work);
+	int ret = rtl_register_lan(priv, priv->lan4_parent, 4, priv->lan4_phy);
+
+	if (ret)
+		dev_err(priv->lan4_parent, "LAN1 initialization failed: %d; other ports retained\n", ret);
+	complete_all(&priv->lan4_ready);
+}
+
+static void rtl_register_lans(struct rtl_xram *priv, struct device *parent)
+{
+	struct device_node *phy;
+	unsigned int port;
+	int ret;
+
+	/* Do not expose an openable port until all synchronous ports are
+	 * published and NI4 work is queued (or its completion is signalled). */
+	rtnl_lock();
+	for (port = 0; port < ARRAY_SIZE(priv->ports); port++) {
+		phy = of_parse_phandle(parent->of_node,
+			port == priv->port ? "phy-handle" : "realtek,lan-phys",
+			port == priv->port ? 0 : port);
+		if (!phy)
+			continue;
+		if (port == 4) {
+			/* Like the OEM rtk_rtl8221b_device_init_thread, set up
+			 * the external RTL8221B off the boot path: its HiSGMII
+			 * force-down poll can take the full 100 x 100ms. */
+			priv->lan4_parent = parent;
+			priv->lan4_phy = phy;
+			INIT_WORK(&priv->lan4_work, rtl_lan4_work);
+			schedule_work(&priv->lan4_work);
+			continue;
+		}
+		ret = rtl_register_lan(priv, parent, port, phy);
+		if (ret)
+			dev_err(parent, "LAN%u initialization failed: %d; other ports retained\n",
+				rtl_lan_number(port), ret);
+	}
+	if (!priv->lan4_phy)
+		complete_all(&priv->lan4_ready);
+	/* The first LAN open starts QM. Publish P6 before releasing RTNL so
+	 * that its ingress tables are present even if a LAN opens first. */
+	ret = rtl_register_fttr(priv);
+	if (ret)
+		dev_err(parent, "FTTR initialization failed: %d; LAN ports retained\n", ret);
+	rtnl_unlock();
+}
+
+static ssize_t xram_state_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct net_device *netdev = dev_get_drvdata(dev);
+	struct rtl_xram *priv = netdev_priv(netdev);
+
+	return sysfs_emit(buf, "port=%u cfg=%08x static=%08x rx=%u/%u tx=%u/%u pending=%u\n",
+		priv->port, readl(priv->ni + XRAM_CFG), readl(priv->ni + GLB_STATIC),
+		rtl_pointer(priv, RX_READ), rtl_pointer(priv, RX_WRITE),
+		rtl_pointer(priv, TX_READ), rtl_pointer(priv, TX_WRITE), priv->tx_pending);
+}
+static DEVICE_ATTR_RO(xram_state);
+
+static ssize_t dma_state_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+
+	return priv->dma_tx ? rtl_dma_tx_state(&priv->dma, buf) : sysfs_emit(buf, "XRAM TX\n");
+}
+static DEVICE_ATTR_RO(dma_state);
+
+static ssize_t datapath_profile_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+
+	return sysfs_emit(buf, "enabled=%u host_RX_poll_ns=%llu host_RX_polls=%llu "
+		"WiFi_forwarded_packets=%llu WiFi_miss_packets=%llu WiFi_RX_copy_bytes=%llu "
+		"WiFi_RX_copy_ns=%llu WiFi_dispatch_ns=%llu "
+		"WiFi_lookup_packets=%llu WiFi_TX_copy_bytes=%llu WiFi_TX_prepare_ns=%llu\n",
+		priv->qm.profile, priv->qm.host_poll_ns, priv->qm.host_polls,
+		priv->qm.wifi_forwarded, priv->qm.wifi_missed, priv->qm.wifi_copy_bytes,
+		priv->qm.wifi_copy_ns, priv->qm.wifi_dispatch_ns,
+		priv->dma.wifi_packets, priv->dma.wifi_copy_bytes, priv->dma.wifi_prepare_ns);
+}
+
+static ssize_t datapath_profile_store(struct device *dev, struct device_attribute *attr,
+	const char *buf, size_t count)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	bool enabled;
+	int ret = kstrtobool(buf, &enabled);
+
+	if (ret)
+		return ret;
+	WRITE_ONCE(priv->qm.profile, enabled);
+	WRITE_ONCE(priv->dma.profile, enabled);
+	return count;
+}
+static DEVICE_ATTR_RW(datapath_profile);
+
+static ssize_t pipeline_state_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+
+	return sysfs_emit(buf, "l2tm_es=%08x l2tm_port0=%08x qm_eq=%08x ni_internal=%08x ni_nitx=%08x ni_qm=%08x rx_hdr=%08x/%08x/%08x rx_pkts=%u rx_out=%08x/%08x l2qm_free=%08x\n",
+		readl(priv->ni + 0x2300), readl(priv->ni + 0x2304),
+		readl(priv->ni + 0x2208), readl(priv->ni + 0xa1bc), readl(priv->ni + 0xa1f4),
+		readl(priv->ni + 0xa120), readl(priv->ni + 0xa088),
+		readl(priv->ni + 0xa08c), readl(priv->ni + 0xa090), readl(priv->ni + 0xa094),
+		readl(priv->ni + 0xa10c), readl(priv->ni + 0xa110), readl(priv->ni + 0x2234));
+}
+static DEVICE_ATTR_RO(pipeline_state);
+
+static ssize_t qm_state_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+
+	return priv->qm_rx ? rtl_qm_rx_state(&priv->qm, buf) : sysfs_emit(buf, "XRAM RX\n");
+}
+static DEVICE_ATTR_RO(qm_state);
+
+static ssize_t qm_trace_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	return rtl_qm_rx_trace(&priv->qm, buf);
+}
+
+static ssize_t qm_trace_store(struct device *dev, struct device_attribute *attr,
+			     const char *buf, size_t count)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	priv->qm.trace_count = 0;
+	return count;
+}
+static DEVICE_ATTR_RW(qm_trace);
+
+static ssize_t qm_pool_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	return rtl_qm_rx_pool(&priv->qm, buf);
+}
+static DEVICE_ATTR_RO(qm_pool);
+
+static ssize_t pon_deepq_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+
+	return rtl_qm_deepq_state(&priv->qm, buf);
+}
+static DEVICE_ATTR_RO(pon_deepq);
+
+static ssize_t qm_wait_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	unsigned int value = FIELD_GET(GENMASK(27, 26), readl(priv->ni + 0x6108));
+
+	return sysfs_emit(buf, "%u\n", value);
+}
+
+static ssize_t qm_wait_store(struct device *dev, struct device_attribute *attr,
+			    const char *buf, size_t count)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	unsigned int value;
+	int ret = kstrtouint(buf, 0, &value);
+
+	if (ret)
+		return ret;
+	if (value > 3)
+		return -EINVAL;
+	rtl_update(priv, 0x6108, GENMASK(27, 26), FIELD_PREP(GENMASK(27, 26), value));
+	return count;
+}
+static DEVICE_ATTR_RW(qm_wait);
+
+static ssize_t qm_es_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	return sysfs_emit(buf, "%08x\n", readl(priv->ni + 0x6108));
+}
+
+static ssize_t qm_es_store(struct device *dev, struct device_attribute *attr,
+			  const char *buf, size_t count)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	u32 value;
+	int ret = kstrtou32(buf, 0, &value);
+	if (ret)
+		return ret;
+	writel(value, priv->ni + 0x6108);
+	return count;
+}
+static DEVICE_ATTR_RW(qm_es);
+
+static ssize_t qm_buffer_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	return sysfs_emit(buf, "%08x\n", readl(priv->ni + 0x68b0));
+}
+
+static ssize_t qm_buffer_store(struct device *dev, struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	u32 value;
+	int ret = kstrtou32(buf, 0, &value);
+	if (ret)
+		return ret;
+	writel(value, priv->ni + 0x68b0);
+	return count;
+}
+static DEVICE_ATTR_RW(qm_buffer);
+
+/* Direct ingress to CPU0 isolates NI/QM from the classification pipeline. */
+static ssize_t rx_bypass_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+
+	return sysfs_emit(buf, "%08x\n", readl(priv->ni + 0xa5f8 + PORT_STRIDE * priv->port));
+}
+
+static ssize_t rx_bypass_store(struct device *dev, struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	bool enabled;
+	int ret = kstrtobool(buf, &enabled);
+
+	if (ret)
+		return ret;
+	rtl_update(priv, 0xa5f8 + PORT_STRIDE * priv->port,
+		   BIT(28) | GENMASK(21, 16) | BIT(31),
+		   enabled ? BIT(28) | (16 << 16) : 0);
+	return count;
+}
+static DEVICE_ATTR_RW(rx_bypass);
+
+int rtl9617c_ni_fttr_load_begin(struct device *dev)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	int ret = 0;
+
+	rtnl_lock();
+	if (!priv->fttr || !priv->p6.qx) {
+		ret = -ENODEV;
+		goto out;
+	}
+	if (priv->fttr_loading || netif_running(priv->fttr)) {
+		ret = -EBUSY;
+		goto out;
+	}
+	/* Factory NWAY is configured by userspace before the loader probe.
+	 * Peer link cannot be required before the FPGA has its bitstream.
+	 */
+	if (!priv->p6.configured || priv->p6.mode != 5 ||
+	    !(readl(priv->p6.qx + 0x58) & BIT(13))) {
+		ret = -EPROBE_DEFER;
+		goto out;
+	}
+	rtl_fttr_tx_gate(priv, false);
+	ret = rtl_fe_fttr_set(priv->fe, false);
+	if (!ret)
+		priv->fttr_loading = true;
+out:
+	rtnl_unlock();
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_fttr_load_begin);
+
+void rtl9617c_ni_fttr_load_end(struct device *dev, int error)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+
+	rtnl_lock();
+	if (error) {
+		rtl_fttr_p6_stop(&priv->p6);
+		priv->p6.error = error;
+	}
+	priv->fttr_loading = false;
+	rtnl_unlock();
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_fttr_load_end);
+
+static ssize_t fttr_link_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	struct rtl_fttr_p6 *p6 = &priv->p6;
+	ssize_t size;
+
+	rtnl_lock();
+	size = sysfs_emit(buf, "configured=%u mode=%u nway=%u clock=%u error=%d link=%u\n",
+			  p6->configured, p6->mode, p6->nway,
+			  !!(readl(p6->qx + 0x58) & BIT(13)), p6->error, rtl_fttr_p6_link(p6));
+	rtnl_unlock();
+	return size;
+}
+
+static ssize_t fttr_link_store(struct device *dev, struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	unsigned int mode, nway;
+	int ret;
+
+	if (sscanf(buf, "%u %u", &mode, &nway) != 2 || nway > 1)
+		return -EINVAL;
+	if (mode && mode != 5 && mode != 9)
+		return -EOPNOTSUPP;
+	rtnl_lock();
+	if (priv->fttr_loading) {
+		ret = -EBUSY;
+		goto out;
+	}
+	rtl_fttr_tx_gate(priv, false);
+	if (priv->fttr && netif_running(priv->fttr))
+		netif_carrier_off(priv->fttr);
+	ret = rtl_fe_fttr_set(priv->fe, false);
+	if (ret && mode)
+		goto out;
+	if (!mode) {
+		rtl_fttr_p6_stop(&priv->p6);
+		priv->p6.error = ret;
+	} else {
+		ret = rtl_fttr_p6_configure(&priv->p6, mode, nway);
+	}
+	if (priv->fttr && netif_running(priv->fttr) && !ret && mode) {
+		rtl_fttr_tx_gate(priv, true);
+		netif_wake_queue(priv->fttr);
+	}
+out:
+	rtnl_unlock();
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(fttr_link);
+
+static ssize_t fttr_accel_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+
+	return rtl_fe_fttr_state(priv->fe, buf);
+}
+
+static ssize_t fttr_accel_store(struct device *dev, struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	bool allowed;
+	int ret = kstrtobool(buf, &allowed);
+
+	if (ret)
+		return ret;
+	rtnl_lock();
+	if (allowed && (priv->fttr_loading || !priv->fttr_forwarding)) {
+		rtnl_unlock();
+		return -EBUSY;
+	}
+	if (!allowed)
+		WRITE_ONCE(priv->qm.fttr_epoch, priv->qm.fttr_epoch + 1);
+	ret = rtl_fe_fttr_set(priv->fe, allowed);
+	rtnl_unlock();
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(fttr_accel);
+
+/* ndo_stop's return value is ignored by net/core/dev.c. The resident owner
+ * must obtain this synchronous acknowledgement after closing fttr-mc and
+ * before releasing remote GEM membership or reusing its local service. */
+static ssize_t fttr_mcast_flush_store(struct device *dev, struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	unsigned int value;
+	char extra;
+	int ret;
+
+	if (sscanf(buf, "%u %c", &value, &extra) != 1 || value != 1)
+		return -EINVAL;
+	rtnl_lock();
+	if (priv->fttr_mc && netif_running(priv->fttr_mc))
+		ret = -EBUSY;
+	else if (priv->fttr)
+		ret = rtl_fttr_mcast_quiesce(priv->fttr);
+	else
+		ret = rtl_fe_flush_multicast(priv->fe, true);
+	rtnl_unlock();
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_WO(fttr_mcast_flush);
+
+/* GRO retains the Ethernet protocol even after eth_type_trans pulls the
+ * header. In-band or metadata VLANs cannot turn business into management.
+ */
+static bool rtl_fttr_gro_business(struct rtl_xram *priv, const struct sk_buff *skb)
+{
+	return skb->dev == priv->fttr_mc || (skb->dev == priv->fttr && (skb_vlan_tag_present(skb) ||
+	       !priv->fttr_omci_type || skb->protocol != htons(priv->fttr_omci_type)));
+}
+
+static void rtl_fttr_rx_purge(struct rtl_xram *priv)
+{
+	struct gro_node *gro = &priv->napi.gro;
+	struct sk_buff *skb, *next;
+	unsigned int i;
+
+	ASSERT_RTNL();
+	/* A shared engine can still hold P6 skbs after fttr0 was closed. Never
+	 * disable NAPI a second time when the last engine owner already stopped.
+	 */
+	if (priv->engine_users)
+		napi_disable(&priv->napi);
+	/* NAPI completion releases ownership before finishing GRO delivery. */
+	synchronize_net();
+	local_bh_disable();
+	for (i = 0; i < GRO_HASH_BUCKETS; i++) {
+		list_for_each_entry_safe(skb, next, &gro->hash[i].list, list) {
+			if (!rtl_fttr_gro_business(priv, skb))
+				continue;
+			skb_list_del_init(skb);
+			gro->hash[i].count--;
+			skb->dev->stats.rx_dropped++;
+			kfree_skb(skb);
+		}
+		if (!gro->hash[i].count)
+			__clear_bit(i, &gro->bitmask);
+	}
+	list_for_each_entry_safe(skb, next, &gro->rx_list, list) {
+		if (!rtl_fttr_gro_business(priv, skb))
+			continue;
+		skb_list_del_init(skb);
+		skb->dev->stats.rx_dropped++;
+		kfree_skb(skb);
+	}
+	/* The normal batch counts original segments, not skb entries. Deliver
+	 * its surviving management/other-port packets before resetting that count.
+	 * Other ports' held GRO aggregates stay intact.
+	 */
+	netif_receive_skb_list(&gro->rx_list);
+	gro->rx_count = 0;
+	for (i = 0; i < ARRAY_SIZE(priv->qm.fttr_rx); i++)
+		rtl_fttr_rx_reset(&priv->qm.fttr_rx[i]);
+	local_bh_enable();
+	if (priv->engine_users) {
+		napi_enable(&priv->napi);
+		/* An IRQ during napi_disable may have masked RX without scheduling. */
+		napi_schedule(&priv->napi);
+	}
+}
+
+int rtl_fttr_mcast_quiesce(struct net_device *parent)
+{
+	struct rtl_fttr_port *port = netdev_priv(parent);
+	unsigned long flags;
+	bool active;
+	int ret;
+
+	ASSERT_RTNL();
+	spin_lock_irqsave(&port->shared->tx_lock, flags);
+	active = !(rtl9617c_fttr_generation_read() & 1);
+	rtl9617c_fttr_generation_set(false);
+	spin_unlock_irqrestore(&port->shared->tx_lock, flags);
+	port->shared->fttr_forward_cleanup_error = 0;
+	ret = rtl_fe_flush_multicast(port->shared->fe, true);
+	if (ret)
+		netdev_err(parent, "multicast FE withdrawal failed: %d\n", ret);
+	rtl_fttr_rx_purge(port->shared);
+	/* The DMA queue has one P6 owner. Clear its software qdisc as on a
+	 * forwarding withdrawal; other physical NI ports keep their queues.
+	 */
+	if (netif_running(parent)) {
+		dev_deactivate(parent);
+		dev_activate(parent);
+	}
+	if (!ret) ret = rtl9617c_fttr_tx_drain();
+	if (!ret && active) ret = rtl9617c_fttr_generation_set(true);
+	if (ret) {
+		/* ndo_stop cannot propagate this error; the synchronous flush
+		 * attribute retries it before the resident releases membership. */
+		WRITE_ONCE(port->shared->fttr_forwarding, false);
+		rtl_fttr_mcast_gate(port->shared->fttr_mc, false);
+		port->shared->fttr_forward_cleanup_error =
+			rtl_fe_fttr_set(port->shared->fe, false);
+	}
+	port->shared->fttr_forward_error = ret;
+	return ret;
+}
+
+/* Full software forwarding admission, distinct from acceleration-only mode.
+ * 0 closes business RX/TX before FE withdrawal and purges queued CPU sends.
+ * 1 <OMCI-ethertype> enables after successful FE withdrawal/reconfiguration.
+ * CPU radio requests must finish RPQ/software-drop recovery before return.
+ * This does not claim NI DMA/AFT, direct PE or MiniOLT queues have drained.
+ */
+static ssize_t fttr_forward_store(struct device *dev, struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+	unsigned int enable, type = 0;
+	unsigned long flags;
+	char extra;
+	bool running;
+	int ret;
+
+	if (sscanf(buf, "%u", &enable) != 1 || enable > 1 ||
+	    (!enable && sscanf(buf, "%u %c", &enable, &extra) != 1) ||
+	    (enable && (sscanf(buf, "%u %x %c", &enable, &type, &extra) != 2 ||
+	     type < 0x600 || type > 0xffff || type == ETH_P_8021Q || type == ETH_P_8021AD)))
+		return -EINVAL;
+	rtnl_lock();
+	if (!priv->fttr) { ret = -ENODEV; goto out; }
+	if (enable && priv->fttr_loading) { ret = -EBUSY; goto out; }
+	if (enable && !priv->p6.configured) { ret = -ENETDOWN; goto out; }
+	spin_lock_irqsave(&priv->tx_lock, flags);
+	smp_store_release(&priv->fttr_forwarding, false);
+	rtl9617c_fttr_generation_set(false);
+	spin_unlock_irqrestore(&priv->tx_lock, flags);
+	rtl_fttr_mcast_gate(priv->fttr_mc, false);
+	WRITE_ONCE(priv->qm.fttr_epoch, priv->qm.fttr_epoch + 1);
+	/* Retire held CPU RX before detaching/resetting the parent qdisc and
+	 * waiting for current qdisc runs, including a BUSY skb being requeued.
+	 * No NI spinlock is held across NAPI, netdev/qdisc locks or RCU waits.
+	 */
+	rtl_fttr_rx_purge(priv);
+	running = netif_running(priv->fttr);
+	if (running)
+		dev_deactivate(priv->fttr);
+	priv->fttr_forward_cleanup_error = 0;
+	ret = rtl_fe_fttr_set(priv->fe, false);
+	if (!ret) ret = rtl9617c_fttr_tx_drain();
+	if (!ret && enable) ret = rtl_fe_fttr_set(priv->fe, true);
+	if (ret && enable)
+		/* Cancel a pending enable request too: another shared FE owner
+		 * must not admit this port after the failed transition.
+		 */
+		priv->fttr_forward_cleanup_error = rtl_fe_fttr_set(priv->fe, false);
+	if (running)
+		dev_activate(priv->fttr);
+	if (!ret && enable) {
+		ret = rtl9617c_fttr_generation_set(true);
+		if (ret)
+			priv->fttr_forward_cleanup_error = rtl_fe_fttr_set(priv->fe, false);
+	}
+	if (!ret && enable) {
+		spin_lock_irqsave(&priv->tx_lock, flags);
+		WRITE_ONCE(priv->fttr_omci_type, type);
+		WRITE_ONCE(priv->fttr->rtl9617c_fttr_omci, type);
+		smp_store_release(&priv->fttr_forwarding, true);
+		spin_unlock_irqrestore(&priv->tx_lock, flags);
+		rtl_fttr_mcast_gate(priv->fttr_mc, true);
+	}
+out:
+	priv->fttr_forward_error = ret;
+	rtnl_unlock();
+	return ret ? ret : count;
+}
+
+static ssize_t fttr_forward_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(dev));
+
+	ssize_t size;
+
+	rtnl_lock();
+	size = sysfs_emit(buf, "forwarding=%u omci_type=%04x error=%d cleanup_error=%d\n",
+		priv->fttr_forwarding, priv->fttr_omci_type,
+		priv->fttr_forward_error, priv->fttr_forward_cleanup_error);
+	rtnl_unlock();
+	return size;
+}
+static DEVICE_ATTR_RW(fttr_forward);
+
+static struct attribute *rtl_native_attrs[] = {
+	&dev_attr_xram_state.attr,
+	&dev_attr_dma_state.attr,
+	&dev_attr_datapath_profile.attr,
+	&dev_attr_pipeline_state.attr,
+	&dev_attr_qm_state.attr,
+	&dev_attr_qm_trace.attr,
+	&dev_attr_qm_pool.attr,
+	&dev_attr_pon_deepq.attr,
+	&dev_attr_qm_wait.attr,
+	&dev_attr_qm_es.attr,
+	&dev_attr_qm_buffer.attr,
+	&dev_attr_rx_bypass.attr,
+	&dev_attr_fttr_link.attr,
+	&dev_attr_fttr_accel.attr,
+	&dev_attr_fttr_mcast_flush.attr,
+	&dev_attr_fttr_forward.attr,
+	NULL,
+};
+static umode_t rtl_native_visible(struct kobject *kobj, struct attribute *attr, int index)
+{
+	struct rtl_xram *priv = netdev_priv(dev_get_drvdata(kobj_to_dev(kobj)));
+
+	if ((attr == &dev_attr_fttr_link.attr || attr == &dev_attr_fttr_accel.attr ||
+	     attr == &dev_attr_fttr_forward.attr || attr == &dev_attr_fttr_mcast_flush.attr) && !priv->p6.qx)
+		return 0;
+	if (!priv->qm_rx &&
+	    (attr == &dev_attr_qm_pool.attr || attr == &dev_attr_pon_deepq.attr || attr == &dev_attr_qm_trace.attr ||
+	     attr == &dev_attr_qm_wait.attr || attr == &dev_attr_qm_es.attr ||
+	     attr == &dev_attr_qm_buffer.attr))
+		return 0;
+	return attr->mode;
+}
+
+static const struct attribute_group rtl_native_group = {
+	.attrs = rtl_native_attrs,
+	.is_visible = rtl_native_visible,
+};
+
+static const struct attribute_group *rtl_native_groups[] = {
+	&rtl_native_group,
+	NULL,
+};
+
+static int rtl_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct net_device *netdev;
+	struct rtl_xram *priv;
+	u8 mac[ETH_ALEN];
+	u32 value;
+	int ret;
+
+	netdev = alloc_etherdev(sizeof(*priv));
+	if (!netdev)
+		return -ENOMEM;
+	SET_NETDEV_DEV(netdev, dev);
+	priv = netdev_priv(netdev);
+	priv->lan.shared = priv;
+	priv->netdev = netdev;
+	priv->ni = devm_platform_ioremap_resource(pdev, 0);
+	priv->xram = devm_platform_ioremap_resource(pdev, 1);
+	if (IS_ERR(priv->ni) || IS_ERR(priv->xram)) {
+		ret = IS_ERR(priv->ni) ? PTR_ERR(priv->ni) : PTR_ERR(priv->xram);
+		goto free_netdev;
+	}
+	ret = rtl_fttr_p6_init(pdev, &priv->p6, priv->ni);
+	if (ret)
+		goto free_netdev;
+	ret = of_property_read_u32(dev->of_node, "realtek,port", &priv->port);
+	if (ret)
+		goto free_netdev;
+	priv->lan.port = priv->port;
+	snprintf(netdev->name, sizeof(netdev->name), "lan%u", rtl_lan_number(priv->port));
+	value = readl(priv->ni + MAC_ADDR0);
+	put_unaligned_be32(value, mac);
+	mac[4] = readl(priv->ni + MAC_ADDR1);
+	mac[5] = readl(priv->ni + PORT_STATIC + priv->port * PORT_STRIDE) >> 24;
+	eth_hw_addr_set(netdev, mac);
+	netdev->netdev_ops = &rtl_netdev_ops;
+	netdev->ethtool_ops = &rtl_ethtool_ops;
+	netdev->max_mtu = ETH_DATA_LEN;
+	spin_lock_init(&priv->tx_lock);
+	spin_lock_init(&priv->rx_lock);
+	mutex_init(&priv->mib_lock);
+	init_completion(&priv->lan4_ready);
+	INIT_DELAYED_WORK(&priv->mib_work, rtl_mib_work);
+	netif_napi_add(netdev, &priv->napi, rtl_poll);
+	hrtimer_setup(&priv->timer, rtl_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	priv->dma_tx = of_property_read_bool(dev->of_node, "realtek,dma-tx");
+	if (priv->dma_tx) {
+		priv->dma.registers = devm_platform_ioremap_resource(pdev, 2);
+		if (IS_ERR(priv->dma.registers)) {
+			ret = PTR_ERR(priv->dma.registers);
+			goto del_napi;
+		}
+		priv->dma.axi_reorder = devm_platform_ioremap_resource_byname(pdev,
+									      "dma-axi-reorder");
+		if (IS_ERR(priv->dma.axi_reorder)) {
+			ret = PTR_ERR(priv->dma.axi_reorder);
+			goto del_napi;
+		}
+		priv->dma.port = priv->port;
+		priv->dma.vp = 8;
+		ret = rtl_dma_tx_alloc(dev, &priv->dma);
+		if (ret)
+			goto del_napi;
+	}
+	priv->qm_rx = of_property_read_bool(dev->of_node, "realtek,qm-rx");
+	if (priv->qm_rx) {
+		priv->qm.ni = priv->ni;
+		priv->qm.axi_reorder = devm_platform_ioremap_resource(pdev, 3);
+		if (IS_ERR(priv->qm.axi_reorder)) {
+			ret = PTR_ERR(priv->qm.axi_reorder);
+			goto free_dma;
+		}
+		priv->qm.block_reset = devm_platform_ioremap_resource(pdev, 4);
+		if (IS_ERR(priv->qm.block_reset)) {
+			ret = PTR_ERR(priv->qm.block_reset);
+			goto free_dma;
+		}
+		priv->qm.fttr_supported = !!priv->p6.qx;
+		ret = rtl_qm_rx_alloc(dev, &priv->qm);
+		if (ret)
+			goto free_dma;
+		priv->rx_irq = platform_get_irq(pdev, 0);
+		if (priv->rx_irq < 0) {
+			ret = priv->rx_irq;
+			goto free_dma;
+		}
+		rtl_update(priv, 0x6110, 0xff, 0);
+		ret = request_irq(priv->rx_irq, rtl_rx_irq, 0, "rtl9617c-rx0", priv);
+		if (ret)
+			goto free_dma;
+		priv->irq_requested = true;
+	}
+	if(priv->qm_rx) {
+		priv->fe=rtl_fe_allocate(dev,priv->ni);
+		if(IS_ERR(priv->fe)){ret=PTR_ERR(priv->fe);priv->fe=NULL;goto free_dma;}
+	}
+	platform_set_drvdata(pdev, netdev);
+	rtl_register_lans(priv, dev);
+	ret = sysfs_create_groups(&dev->kobj, rtl_native_groups);
+	if (ret)
+		dev_warn(dev, "NI diagnostic attributes unavailable: %d\n", ret);
+	else
+		priv->native_groups_created = true;
+	if (priv->qm_rx && priv->dma_tx) {
+		ret = rtl_wifi_start(dev);
+		if (ret)
+			dev_warn(dev, "NI Wi-Fi notifier unavailable: %d; LAN ports retained\n", ret);
+		else
+			priv->wifi_started = true;
+	}
+	schedule_delayed_work(&priv->mib_work, HZ);
+	return 0;
+
+free_dma:
+	rtl_fe_free(priv->fe);
+	if (priv->irq_requested)
+		free_irq(priv->rx_irq, priv);
+	if (priv->qm_rx && priv->qm.memory)
+		rtl_qm_rx_free(dev, &priv->qm);
+	if (priv->dma_tx)
+		rtl_dma_tx_free(dev, &priv->dma);
+del_napi:
+	netif_napi_del(&priv->napi);
+free_netdev:
+	free_netdev(netdev);
+	return ret;
+}
+
+static void rtl_remove(struct platform_device *pdev)
+{
+	struct net_device *dev = platform_get_drvdata(pdev);
+	struct rtl_xram *priv = netdev_priv(dev);
+	unsigned int port;
+
+	if (priv->lan4_phy)
+		flush_work(&priv->lan4_work);
+	cancel_delayed_work_sync(&priv->mib_work);
+	WRITE_ONCE(priv->removing, true);
+	if (priv->wifi_started) rtl_wifi_stop();
+	if (priv->native_groups_created)
+		sysfs_remove_groups(&pdev->dev.kobj, rtl_native_groups);
+	rtl_unregister_fttr(priv);
+	if (priv->p6.qx) {
+		rtnl_lock();
+		rtl_fttr_p6_stop(&priv->p6);
+		rtnl_unlock();
+	}
+	for (port = 0; port < ARRAY_SIZE(priv->ports); port++)
+		rtl_unregister_lan(priv, port);
+	synchronize_net();
+	rtl_fe_free(priv->fe);
+	if (priv->irq_requested)
+		free_irq(priv->rx_irq, priv);
+	if (priv->qm_rx)
+		rtl_qm_rx_free(&pdev->dev, &priv->qm);
+	if (priv->dma_tx)
+		rtl_dma_tx_free(&pdev->dev, &priv->dma);
+	netif_napi_del(&priv->napi);
+	free_netdev(dev);
+}
+
+static const struct of_device_id rtl_match[] = {
+	{ .compatible = "realtek,rtl9617c-xram-eth" }, { }
+};
+MODULE_DEVICE_TABLE(of, rtl_match);
+
+static struct platform_driver rtl_driver = {
+	.probe = rtl_probe,
+	.remove = rtl_remove,
+	.driver = { .name = "rtl9617c-xram", .of_match_table = rtl_match },
+};
+module_platform_driver(rtl_driver);
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("RTL9617C management XRAM Ethernet");

@@ -1,0 +1,59 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+#ifndef TYFZA1_FTTR_MINIOLT_H
+#define TYFZA1_FTTR_MINIOLT_H
+
+#include "omci-wire.h"
+
+#define FTTR_ONUS 64
+
+enum fttr_backend { FTTR_FPGA1 = 1, FTTR_FPGA2, FTTR_ASIC9690 };
+
+static inline bool fttr_miniolt_recovery_needed(enum fttr_backend backend, uint32_t upstream)
+{
+	uint32_t mask = backend == FTTR_FPGA1 ? 0x00f00000 : 0x01f00000;
+
+	return !(upstream >> 30) && (upstream & mask);
+}
+
+struct fttr_onu_state {
+	uint32_t downstream, upstream, eqd;
+	uint8_t serial[8];
+};
+
+int fttr_miniolt_table(int directory, struct fttr_onu_state table[FTTR_ONUS]);
+int fttr_miniolt_link(int directory, struct fttr_omci_link *link);
+int fttr_miniolt_links_ready(int directory, int ni);
+int fttr_miniolt_one(int directory, unsigned int id, struct fttr_onu_state *onu);
+int fttr_miniolt_same(int directory, unsigned int id, const struct fttr_onu_state *expected);
+int fttr_miniolt_management(int directory, unsigned int id, bool enable);
+int fttr_miniolt_backend(int directory);
+int fttr_miniolt_alloc_id(enum fttr_backend backend, unsigned int id, unsigned int slot);
+uint16_t fttr_miniolt_gem_id(unsigned int id, unsigned int ordinal);
+int fttr_miniolt_tcont(int directory, unsigned int id, unsigned int slot,
+		       unsigned int fixed, unsigned int assured, unsigned int maximum);
+struct fttr_tcont_grant { uint32_t fixed, limits; };
+int fttr_miniolt_tcont_read(int directory, unsigned int id, unsigned int slot,
+			   struct fttr_tcont_grant *grant);
+int fttr_miniolt_tx_disable(int directory);
+int fttr_miniolt_p6_stop(int ni);
+int fttr_miniolt_p6_prepare(int ni, unsigned int nway);
+int fttr_miniolt_command(int directory, const char *name, const char *value);
+int fttr_miniolt_admin(int directory, unsigned int id, unsigned int action, const uint8_t serial[8]);
+int fttr_miniolt_move(int directory, unsigned int from, unsigned int to,
+		const uint8_t serial[8], const uint8_t target[8]);
+int fttr_miniolt_move_recover(int directory, unsigned int from, unsigned int to,
+	const uint8_t serial[8], const uint8_t previous[8]);
+int fttr_miniolt_wait_links(int directory, int ni);
+int fttr_miniolt_calibrated(int optical);
+
+struct fttr_optical_monitor {
+	int directory;
+	unsigned int interval, elapsed;
+	int64_t due;
+	enum { FTTR_OPTICAL_IDLE, FTTR_OPTICAL_RELOADED, FTTR_OPTICAL_DISABLED,
+		FTTR_OPTICAL_ENABLED } phase;
+};
+int fttr_miniolt_optical_start(struct fttr_optical_monitor *monitor, int64_t now);
+int fttr_miniolt_optical_tick(struct fttr_optical_monitor *monitor, int miniolt, int64_t now);
+
+#endif
