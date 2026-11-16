@@ -1,0 +1,26 @@
+# AN7581 (Airoha) PON package list, copied for reference only.
+#
+# Source: gwrt-mk-an7581-config.sh lines 105-118 in the GWRT source tree.
+# These are target-gated by DEPENDS on TARGET_airoha, so they are not usable
+# on TYFZA1 (Realtek RTL9617CVW).  Keep the file as the reference of what the
+# AN7581 firmware carries, not as a TYFZA1 config fragment.
+
+# Kernel drivers (feeds/pon_drivers)
+kmod-airoha-xpon
+kmod-airoha-pon-frontend
+kmod-airoha-en7572
+kmod-airoha-paged-bosa
+
+# Userspace (feeds/pon_userspace)
+airoha-ponctl
+airoha-pond
+airoha-pon-debug
+
+# LuCI
+luci-app-pon
+luci-i18n-pon-zh-cn
+luci-app-iptv
+luci-i18n-iptv-zh-cn
+
+# Local GWRT package (platform-neutral, also copied into this repo)
+luci-app-pon-wan

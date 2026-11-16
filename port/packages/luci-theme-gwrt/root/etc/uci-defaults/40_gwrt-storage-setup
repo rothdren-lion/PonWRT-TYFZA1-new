@@ -1,0 +1,44 @@
+#!/bin/sh
+# Select the largest already-mounted data partition. Never use an unmounted
+# partition as storage; creating directories there would write to the rootfs.
+
+mounts=${GWRT_PROC_MOUNTS:-/proc/mounts}
+mount_list="${TMPDIR:-/tmp}/gwrt-storage-mounts.$$"
+trap 'rm -f "$mount_list"' EXIT HUP INT TERM
+GWRT_STORE_DEV=""
+mp=""
+best=0
+
+awk '$1 ~ /^\/dev\/(mmcblk[0-9]+p[0-9]+|sd[a-z][0-9]+|nvme[0-9]+n[0-9]+p[0-9]+)$/ {print $1, $2}' "$mounts" 2>/dev/null >"$mount_list"
+while read -r dev mounted rest; do
+	case "$mounted" in /mnt/*|/media/*) ;; *) continue ;; esac
+	case "$dev" in
+		/dev/mmcblk*p*|/dev/sd[a-z][0-9]*|/dev/nvme*n*p[0-9]*) ;;
+		*) continue ;;
+	esac
+	[ -b "$dev" ] || continue
+	blk=$(basename "$dev")
+	[ -r "/sys/class/block/$blk/size" ] || continue
+	sect=$(cat "/sys/class/block/$blk/size" 2>/dev/null) || continue
+	sz=$((sect * 512))
+	[ "$sz" -gt "$best" ] || continue
+	best=$sz
+	GWRT_STORE_DEV="$dev"
+	mp=$(printf '%s' "$mounted" | sed 's/\\040/ /g')
+done <"$mount_list"
+
+[ -n "$GWRT_STORE_DEV" ] || { logger -t 40_gwrt-storage "未找到已挂载的数据分区，保留当前设置"; exit 0; }
+[ "$mp" != / ] || { logger -t 40_gwrt-storage "数据分区指向根目录，保留当前设置"; exit 0; }
+
+[ -d "$mp" ] || { logger -t 40_gwrt-storage "数据分区挂载点不可用，保留当前设置"; exit 0; }
+
+mkdir -p "$mp/downloads"
+chmod 0775 "$mp/downloads" 2>/dev/null
+
+uci -q set gwrt.storage_dev="$GWRT_STORE_DEV"
+uci -q set gwrt.storage_mount="$mp"
+uci -q set gwrt.downloads_dir="$mp/downloads"
+uci -q commit gwrt
+
+logger -t 40_gwrt-storage "数据分区=$GWRT_STORE_DEV($((best/1024/1024))MB) 挂载点=$mp downloads=$mp/downloads"
+exit 0

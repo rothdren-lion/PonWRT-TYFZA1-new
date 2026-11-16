@@ -1,0 +1,16 @@
+config pon_wan 'settings'
+	option enabled '0'
+	# 承载业务流量的 PON 口；TYFZA1 由 board.d/02_network 建为 wan 设备。
+	option uplink 'pon0'
+	# 运营商业务 VLAN / LAN ID；留空表示 PON 口不打 VLAN。
+	option vlan ''
+	# 绑定到 VLAN 设备的接口，默认沿用 wan。
+	option iface 'wan'
+	# dhcp, pppoe, static 或 none
+	option proto 'dhcp'
+	option ipaddr ''
+	option netmask '255.255.255.0'
+	option gateway ''
+	option dns ''
+	option pppoe_username ''
+	option pppoe_password ''

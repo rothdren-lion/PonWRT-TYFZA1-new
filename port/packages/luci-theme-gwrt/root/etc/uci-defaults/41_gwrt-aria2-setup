@@ -1,0 +1,30 @@
+#!/bin/sh
+# Change the package's default download path only when data storage is mounted.
+# Preserve the administrator's enable switch, credentials, and custom paths.
+mounts=${GWRT_PROC_MOUNTS:-/proc/mounts}
+download_dir=$(uci -q get gwrt.downloads_dir 2>/dev/null)
+storage_mount=$(uci -q get gwrt.storage_mount 2>/dev/null)
+[ -n "$download_dir" ] && [ -n "$storage_mount" ] || exit 0
+[ -d "$download_dir" ] || exit 0
+
+mounted=$(awk -v target="$storage_mount" '{mp=$2; gsub(/\\040/, " ", mp); if (mp == target) {print 1; exit}}' "$mounts" 2>/dev/null)
+[ "$mounted" = 1 ] || {
+	logger -t 41_gwrt-aria2 "下载存储尚未挂载，保留 aria2 设置"
+	exit 0
+}
+case "$download_dir/" in
+	"${storage_mount%/}"/*) ;;
+	*) logger -t 41_gwrt-aria2 "下载目录不属于已挂载存储，保留 aria2 设置"; exit 0 ;;
+esac
+aria_dir="$download_dir/aria2"
+current_dir=$(uci -q get aria2.main.dir 2>/dev/null)
+case "$current_dir" in
+	""|/mnt/sda1/aria2|"$aria_dir") ;;
+	*) exit 0 ;;
+esac
+mkdir -p "$aria_dir" || exit 0
+chmod 0775 "$aria_dir" 2>/dev/null
+uci -q set aria2.main.dir="$aria_dir"
+uci -q commit aria2
+logger -t 41_gwrt-aria2 "使用已挂载数据分区的下载目录 $aria_dir"
+exit 0
