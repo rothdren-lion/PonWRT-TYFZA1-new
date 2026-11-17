@@ -57,6 +57,12 @@ if [ "$GWRT_MESH" = 1 ]; then
     REQUIRED="$REQUIRED gwrt-agent gwrt-mesh-led gwrt-mesh-apmode gwrt-mesh-defaults"
     REQUIRED="$REQUIRED wifiroam luci-app-wifiroam luci-i18n-wifiroam-zh-cn"
 fi
+# Dependencies the mesh packages declare.  They live in the pinned packages
+# feed, so a missing feeds install line makes defconfig drop them without a
+# word and package/install fails much later with "<pkg> (no such package)".
+if [ "$GWRT_MESH" = 1 ]; then
+    REQUIRED="$REQUIRED curl libnetfilter-queue relayd kmod-nfnetlink-queue jsonfilter"
+fi
 for package in $REQUIRED; do
     grep -qx "CONFIG_PACKAGE_$package=y" .config || {
         echo "Required firmware package missing after defconfig: $package (TYFZA1_GWRT_THEME=0 / TYFZA1_GWRT_MESH=0 drop that group)" >&2
