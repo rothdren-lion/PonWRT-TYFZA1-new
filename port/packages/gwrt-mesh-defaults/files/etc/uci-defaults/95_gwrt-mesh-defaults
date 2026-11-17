@@ -1,0 +1,30 @@
+#!/bin/sh
+# GWRT mesh defaults for TYFZA1 (RTL9617C PON board)
+#
+# Runs before the packages' own defaults (95 < 98/99), so the values set here
+# win.  Nothing in this script changes network, wireless or PON setup.
+
+[ -f /etc/config/gwrt ] || touch /etc/config/gwrt
+
+# Status LED: keep the meshed indicator on, auto-select the LED.
+uci -q get gwrt.mesh_led.enabled >/dev/null 2>&1 || {
+	uci -q set gwrt.mesh_led='mesh_led'
+	uci -q set gwrt.mesh_led.leds='auto'
+	uci -q set gwrt.mesh_led.enabled='1'
+	uci -q commit gwrt
+}
+
+# AP mode stays OFF: this board is the router (PON WAN).  Switching to a real
+# AP stops dnsmasq/odhcpd and moves WAN into br-lan, which would cut PON
+# service.  Turn it on from LuCI/APP once the device is actually a sub node.
+uci -q get gwrt.mesh_apmode.enabled >/dev/null 2>&1 || {
+	uci -q set gwrt.mesh_apmode='mesh_apmode'
+	uci -q set gwrt.mesh_apmode.enabled='0'
+	uci -q commit gwrt
+}
+
+for service in gwrt-agent gwrt-mesh-led; do
+	[ -x "/etc/init.d/$service" ] && /etc/init.d/$service enable >/dev/null 2>&1
+done
+
+exit 0

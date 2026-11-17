@@ -27,6 +27,10 @@ GWRT_THEME=${TYFZA1_GWRT_THEME:-1}
 if [ "$GWRT_THEME" = 1 ]; then
     sh "$PORT/scripts/sync-gwrt-theme.sh" "$TREE"
 fi
+GWRT_MESH=${TYFZA1_GWRT_MESH:-1}
+if [ "$GWRT_MESH" = 1 ]; then
+    sh "$PORT/scripts/sync-gwrt-mesh.sh" "$TREE"
+fi
 sh "$PROJECT/scripts/prepare_luci_feeds.sh" "$TREE"
 cd "$TREE"
 REGDB_PATCHED=0
@@ -39,12 +43,22 @@ if [ "$GWRT_THEME" = 1 ]; then
     printf '\n# --- GWRT theme + PON WAN (port/configs/gwrt-theme.config) ---\n' >>.config
     grep -E '^CONFIG_' "$PORT/configs/gwrt-theme.config" >>.config
 fi
+if [ "$GWRT_MESH" = 1 ]; then
+    test -f .config || { echo "missing $TREE/.config; seed it before building" >&2; exit 1; }
+    printf '\n# --- GWRT mesh + agent (port/configs/gwrt-mesh.config) ---\n' >>.config
+    grep -E '^CONFIG_' "$PORT/configs/gwrt-mesh.config" >>.config
+fi
 make defconfig
 REQUIRED='luci-app-tyfza1-pon luci-theme-argon luci-i18n-argon-config-zh-cn'
-[ "$GWRT_THEME" = 1 ] && REQUIRED="$REQUIRED luci-theme-gwrt luci-app-pon-wan"
+if [ "$GWRT_THEME" = 1 ]; then
+    REQUIRED="$REQUIRED luci-theme-gwrt luci-app-pon-wan"
+fi
+if [ "$GWRT_MESH" = 1 ]; then
+    REQUIRED="$REQUIRED gwrt-agent gwrt-mesh-led gwrt-mesh-apmode gwrt-mesh-defaults"
+fi
 for package in $REQUIRED; do
     grep -qx "CONFIG_PACKAGE_$package=y" .config || {
-        echo "Required firmware package missing after defconfig: $package (set TYFZA1_GWRT_THEME=0 to build without the GWRT theme)" >&2
+        echo "Required firmware package missing after defconfig: $package (TYFZA1_GWRT_THEME=0 / TYFZA1_GWRT_MESH=0 drop that group)" >&2
         exit 1
     }
 done
