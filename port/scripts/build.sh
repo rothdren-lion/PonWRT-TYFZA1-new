@@ -85,17 +85,18 @@ if grep -qi microsoft /proc/sys/kernel/osrelease; then
     fi
 fi
 make -j"$JOBS" download
-# Fail fast on the packages this port carries.  A failure inside them shows up
-# in the world build as a bare "ERROR: package/<name> failed to build" with no
-# text, so compile them verbosely first.
+# Fail fast on the ported wifiroam packages.  A failure inside them shows up in
+# the world build as a bare "ERROR: package/<name> failed to build" with no
+# text, so compile them verbosely first.  Only these three: the gwrt-mesh-*
+# packages pull kernel modules, which cannot build before world prepares the
+# kernel tree.
 if [ "$GWRT_MESH" = 1 ]; then
     # Package compiles need the host tools and the cross toolchain
     # (staging_dir/host/bin/sed, staging_dir/toolchain-*/lib/libgcc_s.so).
     # world builds them later; build them first so the preflight below works.
     make -j"$JOBS" tools/install
     make -j"$JOBS" toolchain/install
-    for package in wifiroam luci-app-wifiroam luci-i18n-wifiroam-zh-cn \
-                   gwrt-agent gwrt-mesh-led gwrt-mesh-apmode gwrt-mesh-defaults; do
+    for package in wifiroam luci-app-wifiroam luci-i18n-wifiroam-zh-cn; do
         make "package/$package/compile" V=s || {
             echo "preflight: package/$package failed to compile" >&2
             exit 1
