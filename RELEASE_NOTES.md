@@ -1,4 +1,11 @@
-## v0.8.5-theme-261115
+## v0.8.6-gwrt-mesh
+
+- 测试构建：把 GWRT 的 gwrt-agent、gwrt-mesh-led、gwrt-mesh-apmode 三个包及其依赖接入 TYFZA1 镜像。
+- 新增 gwrt-mesh-defaults 首启脚本，只初始化 mesh 灯与 agent 服务；Mesh 自动切真 AP 默认关闭，避免 PON 主路由被切走导致断网。
+- 新增 port/scripts/sync-gwrt-mesh.sh 同步脚本，GWRT_MESH_PRUNE=1 时不安装 GWRT 的 IPv6 自动配置钩子，保持 TYFZA1 原有 IPv6 行为。
+- wifiroam 基包未随镜像提供，本次不启用 wifiroam 相关功能，Mesh 配对与 AP 模式切换仍不可用。
+- PON 功能、主题与 0.8.5-theme 保持一致，未做其它功能变更。
+
 
 - 测试构建：移植 GWRT 主题（luci-theme-gwrt r117），首页状态卡与“网络接口”端口格统一宽度。
 - 新增 PON WAN 与 VLAN 设置页（luci-app-pon-wan），按 RTL9617CVW 天邑 TYFZA1 适配。
