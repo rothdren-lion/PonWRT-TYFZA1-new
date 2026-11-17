@@ -18,10 +18,13 @@
 #   gwrt-mesh-apmode    router <-> real-AP state machine
 #   gwrt-wifiroam-v5    wifiroam v5 page/daemon overlay + wifiroam-dpi
 #   gwrt-mesh-defaults  enabling only (this port; see the uci-defaults)
+#   wifiroam            base daemon + config (restored from the 0.1.0-r1 apk)
+#   luci-app-wifiroam   four LuCI views, menu, ACL
+#   luci-i18n-wifiroam-zh-cn  Chinese translation
 #
-# NOT staged: the upstream wifiroam base package.  It is not in any OpenWrt
-# feed; the AN7581 tree only carries a prebuilt apk for it.  Mesh therefore
-# needs that base package (or an extracted copy of it) before it can run.
+# The wifiroam base package is in no OpenWrt feed.  The AN7581 tree only ships
+# a prebuilt apk, so it is vendored here as plain files (see
+# port/packages/wifiroam/Makefile for the apk it was extracted from).
 set -eu
 export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 umask 022
@@ -34,7 +37,10 @@ test -d "$TREE/package" || {
     exit 1
 }
 
-for package in gwrt-agent gwrt-mesh-led gwrt-mesh-apmode gwrt-wifiroam-v5 gwrt-mesh-defaults; do
+PACKAGES="gwrt-agent gwrt-mesh-led gwrt-mesh-apmode gwrt-wifiroam-v5 gwrt-mesh-defaults
+wifiroam luci-app-wifiroam luci-i18n-wifiroam-zh-cn"
+
+for package in $PACKAGES; do
     test -d "$PORT/packages/$package" || {
         echo "missing $PORT/packages/$package" >&2
         exit 1
@@ -64,7 +70,7 @@ if [ "${GWRT_MESH_PRUNE:-1}" = 1 ]; then
 fi
 
 # Guard: every file a staged Makefile installs must exist in the staged tree.
-for package in gwrt-agent gwrt-mesh-led gwrt-mesh-apmode gwrt-wifiroam-v5 gwrt-mesh-defaults; do
+for package in $PACKAGES; do
     makefile="$TREE/package/$package/Makefile"
     test -f "$makefile" || continue
     for stage in $(grep -o '\./files/[A-Za-z0-9._/-]*' "$makefile" | sort -u); do
@@ -91,4 +97,4 @@ if [ "$APPLY_CONFIG" = 1 ]; then
     echo "applied config to $TREE/.config (backup: .config.bak-gwrt-mesh)"
 fi
 
-echo "staged gwrt-agent + gwrt-mesh-led + gwrt-mesh-apmode + gwrt-wifiroam-v5 + gwrt-mesh-defaults into $TREE/package/ (prune=${GWRT_MESH_PRUNE:-1})"
+echo "staged $PACKAGES into $TREE/package/ (prune=${GWRT_MESH_PRUNE:-1})"

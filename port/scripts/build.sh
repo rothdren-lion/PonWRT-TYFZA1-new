@@ -55,6 +55,7 @@ if [ "$GWRT_THEME" = 1 ]; then
 fi
 if [ "$GWRT_MESH" = 1 ]; then
     REQUIRED="$REQUIRED gwrt-agent gwrt-mesh-led gwrt-mesh-apmode gwrt-mesh-defaults"
+    REQUIRED="$REQUIRED wifiroam luci-app-wifiroam luci-i18n-wifiroam-zh-cn"
 fi
 for package in $REQUIRED; do
     grep -qx "CONFIG_PACKAGE_$package=y" .config || {

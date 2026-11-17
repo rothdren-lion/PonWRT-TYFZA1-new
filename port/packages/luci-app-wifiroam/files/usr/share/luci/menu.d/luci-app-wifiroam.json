@@ -1,0 +1,32 @@
+{
+	"admin/services/wifiroam": {
+		"title": "Seamless Roaming",
+		"order": 55,
+		"action": { "type": "view", "path": "wifiroam/topology" },
+		"depends": { "acl": [ "luci-app-wifiroam" ] }
+	},
+	"admin/services/wifiroam/topology": {
+		"title": "Network Topology",
+		"order": 10,
+		"action": { "type": "view", "path": "wifiroam/topology" },
+		"depends": { "acl": [ "luci-app-wifiroam" ] }
+	},
+	"admin/services/wifiroam/clients": {
+		"title": "Clients",
+		"order": 20,
+		"action": { "type": "view", "path": "wifiroam/clients" },
+		"depends": { "acl": [ "luci-app-wifiroam" ] }
+	},
+	"admin/services/wifiroam/settings": {
+		"title": "Roaming Settings",
+		"order": 30,
+		"action": { "type": "view", "path": "wifiroam/settings" },
+		"depends": { "acl": [ "luci-app-wifiroam" ] }
+	},
+	"admin/services/wifiroam/pairing": {
+		"title": "Mesh Setup",
+		"order": 40,
+		"action": { "type": "view", "path": "wifiroam/pairing" },
+		"depends": { "acl": [ "luci-app-wifiroam" ] }
+	}
+}
