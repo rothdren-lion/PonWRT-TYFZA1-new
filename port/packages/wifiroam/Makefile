@@ -13,13 +13,13 @@ PKG_NAME:=wifiroam
 PKG_VERSION:=0.1.0
 PKG_RELEASE:=1
 PKG_LICENSE:=GPL-2.0-or-later
-PKGARCH:=all
 
 include $(INCLUDE_DIR)/package.mk
 
 define Package/wifiroam
   SECTION:=net
   CATEGORY:=Network
+  PKGARCH:=all
   TITLE:=wifiroam multi-AP topology and 802.11k/v/r roaming daemon
   DEPENDS:=+ucode +ucode-mod-ubus +ucode-mod-uloop +ucode-mod-socket \
 	+ucode-mod-fs +ucode-mod-uci +ucode-mod-digest
@@ -32,6 +32,9 @@ endef
 
 define Package/wifiroam/conffiles
 /etc/config/wifiroam
+endef
+
+define Build/Compile
 endef
 
 define Package/wifiroam/install

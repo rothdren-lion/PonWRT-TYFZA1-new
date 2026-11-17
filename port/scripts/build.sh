@@ -85,6 +85,18 @@ if grep -qi microsoft /proc/sys/kernel/osrelease; then
     fi
 fi
 make -j"$JOBS" download
+# Fail fast on the packages this port carries.  A failure inside them shows up
+# in the world build as a bare "ERROR: package/<name> failed to build" with no
+# text, so compile them verbosely first.
+if [ "$GWRT_MESH" = 1 ]; then
+    for package in wifiroam luci-app-wifiroam luci-i18n-wifiroam-zh-cn \
+                   gwrt-agent gwrt-mesh-led gwrt-mesh-apmode gwrt-mesh-defaults; do
+        make "package/$package/compile" V=s || {
+            echo "preflight: package/$package failed to compile" >&2
+            exit 1
+        }
+    done
+fi
 if [ -n "${TYFZA1_RUNTIME_INPUTS:-}" ]; then
     python3 "$PROJECT/tools/install_runtime_inputs.py" "$TYFZA1_RUNTIME_INPUTS" "$TREE/files"
 else

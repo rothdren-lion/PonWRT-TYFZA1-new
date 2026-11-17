@@ -10,13 +10,13 @@ PKG_NAME:=luci-app-wifiroam
 PKG_VERSION:=0.261025
 PKG_RELEASE:=1
 PKG_LICENSE:=GPL-2.0-or-later
-PKGARCH:=all
 
 include $(INCLUDE_DIR)/package.mk
 
 define Package/luci-app-wifiroam
   SECTION:=luci
   CATEGORY:=LuCI
+  PKGARCH:=all
   SUBMENU:=3. Applications
   TITLE:=LuCI support for wifiroam seamless roaming
   DEPENDS:=+luci-base +wifiroam
@@ -24,6 +24,9 @@ endef
 
 define Package/luci-app-wifiroam/description
   LuCI views, menu, and ACL for the wifiroam daemon.
+endef
+
+define Build/Compile
 endef
 
 define Package/luci-app-wifiroam/install

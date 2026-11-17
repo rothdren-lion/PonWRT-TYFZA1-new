@@ -7,16 +7,19 @@ PKG_NAME:=luci-i18n-wifiroam-zh-cn
 PKG_VERSION:=0.261025
 PKG_RELEASE:=1
 PKG_LICENSE:=GPL-2.0-or-later
-PKGARCH:=all
 
 include $(INCLUDE_DIR)/package.mk
 
 define Package/luci-i18n-wifiroam-zh-cn
   SECTION:=luci
   CATEGORY:=LuCI
+  PKGARCH:=all
   SUBMENU:=3. Applications
   TITLE:=Chinese (simplified) translation for luci-app-wifiroam
   DEPENDS:=+luci-app-wifiroam
+endef
+
+define Build/Compile
 endef
 
 define Package/luci-i18n-wifiroam-zh-cn/install
