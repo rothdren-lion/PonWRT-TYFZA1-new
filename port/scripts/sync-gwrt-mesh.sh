@@ -47,11 +47,34 @@ done
 # (it rewrites gwrt.ipv6 auto/pd/relay and enables gwrt-ipv6-auto).  TYFZA1 is a
 # PON board whose WAN6 setup belongs to the PON service, so that hook is dropped
 # by default.  GWRT_MESH_PRUNE=0 keeps the package byte-identical to source.
+# The package Makefile installs those three files explicitly, so dropping the
+# files without dropping the install lines breaks the build (missing source).
+GWRT_AGENT_MAKEFILE="$TREE/package/gwrt-agent/Makefile"
+prune_agent_file() {
+    rm -f "$TREE/package/gwrt-agent/files/$1"
+    # drop the matching "$(INSTALL_BIN) ./files/<path> ..." line
+    grep -v "\./files/$1 " "$GWRT_AGENT_MAKEFILE" >"$GWRT_AGENT_MAKEFILE.tmp"
+    mv "$GWRT_AGENT_MAKEFILE.tmp" "$GWRT_AGENT_MAKEFILE"
+}
+
 if [ "${GWRT_MESH_PRUNE:-1}" = 1 ]; then
-    rm -f "$TREE/package/gwrt-agent/files/etc/uci-defaults/90_gwrt-agent-ipv6"
-    rm -f "$TREE/package/gwrt-agent/files/etc/init.d/gwrt-ipv6-auto"
-    rm -f "$TREE/package/gwrt-agent/files/usr/sbin/gwrt-ipv6-auto.sh"
+    prune_agent_file etc/uci-defaults/90_gwrt-agent-ipv6
+    prune_agent_file etc/init.d/gwrt-ipv6-auto
+    prune_agent_file usr/sbin/gwrt-ipv6-auto.sh
 fi
+
+# Guard: every file a staged Makefile installs must exist in the staged tree.
+for package in gwrt-agent gwrt-mesh-led gwrt-mesh-apmode gwrt-wifiroam-v5 gwrt-mesh-defaults; do
+    makefile="$TREE/package/$package/Makefile"
+    test -f "$makefile" || continue
+    for stage in $(grep -o '\./files/[A-Za-z0-9._/-]*' "$makefile" | sort -u); do
+        file=${stage#./}
+        test -e "$TREE/package/$package/$file" || {
+            echo "$package: Makefile installs missing $file" >&2
+            exit 1
+        }
+    done
+done
 
 if [ "$APPLY_CONFIG" = 1 ]; then
     test -f "$TREE/.config" || {
@@ -68,4 +91,4 @@ if [ "$APPLY_CONFIG" = 1 ]; then
     echo "applied config to $TREE/.config (backup: .config.bak-gwrt-mesh)"
 fi
 
-echo "staged gwrt-agent + gwrt-mesh-led + gwrt-mesh-apmode + gwrt-wifiroam-v5 + gwrt-mesh-defaults into $TREE/package/"
+echo "staged gwrt-agent + gwrt-mesh-led + gwrt-mesh-apmode + gwrt-wifiroam-v5 + gwrt-mesh-defaults into $TREE/package/ (prune=${GWRT_MESH_PRUNE:-1})"
