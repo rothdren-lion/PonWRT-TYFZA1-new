@@ -85,24 +85,6 @@ if grep -qi microsoft /proc/sys/kernel/osrelease; then
     fi
 fi
 make -j"$JOBS" download
-# Fail fast on the ported wifiroam packages.  A failure inside them shows up in
-# the world build as a bare "ERROR: package/<name> failed to build" with no
-# text, so compile them verbosely first.  Only these three: the gwrt-mesh-*
-# packages pull kernel modules, which cannot build before world prepares the
-# kernel tree.
-if [ "$GWRT_MESH" = 1 ]; then
-    # Package compiles need the host tools and the cross toolchain
-    # (staging_dir/host/bin/sed, staging_dir/toolchain-*/lib/libgcc_s.so).
-    # world builds them later; build them first so the preflight below works.
-    make -j"$JOBS" tools/install
-    make -j"$JOBS" toolchain/install
-    for package in wifiroam luci-app-wifiroam luci-i18n-wifiroam-zh-cn; do
-        make "package/$package/compile" V=s || {
-            echo "preflight: package/$package failed to compile" >&2
-            exit 1
-        }
-    done
-fi
 if [ -n "${TYFZA1_RUNTIME_INPUTS:-}" ]; then
     python3 "$PROJECT/tools/install_runtime_inputs.py" "$TYFZA1_RUNTIME_INPUTS" "$TREE/files"
 else
@@ -110,4 +92,10 @@ else
         --stock "${TYFZA1_STOCK_INPUTS:-$PROJECT/analysis/private/live-files}"
     python3 "$PROJECT/tools/prepare_wifi_runtime.py" "$TREE/files" --openwrt-tree "$TREE"
 fi
-make -j"$JOBS" world
+# Verbose, captured build log: with the default verbosity a failure surfaces as
+# a bare "make -r world: build failed" line, with no hint of what broke.
+if ! make -j"$JOBS" -Oline world V=s > "$PROJECT/world.log" 2>&1; then
+    echo "world build failed, last 150 log lines:" >&2
+    tail -n 150 "$PROJECT/world.log" >&2
+    exit 1
+fi
